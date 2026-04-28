@@ -6,13 +6,13 @@ dartdoc:
     "API-reference":
       markdown: doc/api-reference.md
       name: API reference
-    "Crash-guard":
-      markdown: doc/crash-guard.md
-      name: Crash guard
+    "Crash-protection":
+      markdown: doc/crash-protection.md
+      name: Crash protection
   categoryOrder:
     - "Architecture"
     - "API-reference"
-    - "Crash-guard"
+    - "Crash-protection"
   showUndocumentedCategories: true
   ignore:
     - broken-link

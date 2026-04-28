@@ -72,7 +72,7 @@ void main() async {
   await FlutterPatcher.init(
     config: PatcherConfig(
       maxCrashCount: 1,    // 连续崩溃几次后熔断，默认 1（fail-fast）
-      verifyAfter: const Duration(seconds: 5),  // 前台存活多久判定补丁安全，默认 5 秒
+      verifyAfter: const Duration(seconds: 5),  // Dart 错误钩子守护窗口，默认 5 秒
     ),
   );
 
@@ -139,14 +139,14 @@ await FlutterPatcher.rollback();
 
 补丁加载失败时用户最多看到一次白屏，下次冷启动自动回滚到 APK 内置版本，并将该补丁加入本地黑名单防止循环下载。默认 fail-fast：失败 1 次即丢弃。
 
-verified 判定采用三层机制：首帧渲染 + 前台存活指定时长（默认 5 秒）+ 退出原因分析，通过 `ApplicationExitInfo` 区分真崩溃和用户主动关闭，不误伤用户操作。
+补丁加载后首帧渲染即视为初步可信，立即清掉熔断状态——用户从最近任务划掉等"非崩溃退出"不会被误判。Dart 错误钩子再多守 `verifyAfter` 秒（默认 5 秒）捕捉首屏点击型 Dart 异常。Android 11+ 通过 `ApplicationExitInfo` 精确分类崩溃，覆盖首帧前后所有场景。
 
 常用配置项（通过 `PatcherConfig` 在 `init()` 时传入）：
 
 - `maxCrashCount`：连续崩溃的熔断阈值，默认 1
-- `verifyAfter`：前台存活的判定时长，默认 5 秒
+- `verifyAfter`：首帧后 Dart 错误钩子继续监听的窗口，默认 5 秒
 
-完整设计、诊断接口和错误码处理见 [Crash guard (full design)](https://pub.dev/documentation/flutter_patcher/latest/topics/Crash-guard-topic.html)。
+完整设计与诊断接口见 [Crash protection (full design)](https://pub.dev/documentation/flutter_patcher/latest/topics/Crash-protection-topic.html)。
 
 ---
 
@@ -213,7 +213,7 @@ A: 客户端侧调用 `FlutterPatcher.rollback()` 即可。服务端侧停止下
 ## 文档
 
 - [API reference](https://pub.dev/documentation/flutter_patcher/latest/topics/API-reference-topic.html) — API 速查（公开类、字段、方法签名一览，按类组织）
-- [Crash guard](https://pub.dev/documentation/flutter_patcher/latest/topics/Crash-guard-topic.html) — 崩溃保护机制完整设计（fail-fast、verified 三层判定、黑名单、诊断接口、错误码处理）
+- [Crash protection](https://pub.dev/documentation/flutter_patcher/latest/topics/Crash-protection-topic.html) — 崩溃保护机制完整设计（fail-fast、verified 三层判定、黑名单、诊断状态含义）
 - [Architecture](https://pub.dev/documentation/flutter_patcher/latest/topics/Architecture-topic.html) — 技术内幕（工作原理、服务端协议、versionCode 绑定、反射兼容、签名规范、pack CLI、进阶配置、性能与支持范围）
 
 ---

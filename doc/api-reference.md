@@ -14,11 +14,11 @@ await FlutterPatcher.init(
   strictSignature: true,               // API < 33 遇到带签名补丁时：true 拒绝，false 跳过验签
   loaderFieldCandidates: ['flutterLoader'],  // FlutterInjector 内 loader 字段名候选
   loaderFallbackHeuristic: false,      // 候选名都失败后是否启发式扫描兜底
-  verifyAfter: const Duration(seconds: 5),   // 前台存活多久算 verified
+  verifyAfter: const Duration(seconds: 5),   // Dart 错误钩子守护窗口，默认 5 秒
 );
 ```
 
-必须在 `runApp()` 之前调用。内部完成：读取本地补丁元数据、启动熔断器、注册 verified 判定钩子。重复调用幂等。
+必须在 `runApp()` 之前调用。内部完成：读取本地补丁元数据、启动熔断器、安装 Dart 错误钩子、注册首帧回调。重复调用幂等。
 
 大多数项目只需要 `init()` 无参调用，参数按需覆盖即可。
 
@@ -167,7 +167,7 @@ await FlutterPatcher.rollback();
 await FlutterPatcher.reportBootSuccess();
 ```
 
-通常由 `init()` 在 verified 后自动调用，不需要手动干预。仅在你需要更严格的判定时机（比如业务首页渲染完成才算成功）才显式调用。
+通常由 `init()` 在首帧渲染时自动调用，不需要手动干预。仅在你想 **抢在首帧之前** 用自定义判定（比如 `main()` 里跑一段轻量自检）确认补丁可信时才显式调用。首帧后再调用是 no-op。
 
 ---
 
@@ -256,7 +256,7 @@ await FlutterPatcher.clearBlacklist();
 | `reason` | `String` | 入黑原因：`BOOT_CRASH` / `MD5_MISMATCH` / `SIGNATURE_INVALID` / `META_CORRUPTED` |
 | `blacklistedAt` | `DateTime` | 入黑时间 |
 
-黑名单机制的详细设计见 [Crash guard](https://pub.dev/documentation/flutter_patcher/latest/topics/Crash-guard-topic.html)。
+黑名单机制的详细设计见 [Crash protection](https://pub.dev/documentation/flutter_patcher/latest/topics/Crash-protection-topic.html)。
 
 ---
 
@@ -299,6 +299,67 @@ final map = patch.toJson();
 只有 `checkUpdate` 会抛异常（网络失败或 JSON 解析错误），类型为 **`PatcherException`**，包含 `message` 字段。
 
 其他所有 API 通过返回值报告结果，不抛异常。
+
+---
+
+## pack CLI
+
+仓库自带的打包工具，从 `flutter build apk --release` 产物提取 `libapp.so` 并生成补丁元数据。
+
+```bash
+dart run flutter_patcher:pack \
+    --apk build/app/outputs/flutter-apk/app-release.apk \
+    --version 1.0.0-h1 \
+    --target-version-code 100
+```
+
+| 参数 | 说明 |
+|---|---|
+| `--apk <path>` | 必填，release APK 路径 |
+| `--version <string>` | 必填，补丁版本标识（自定义字符串） |
+| `--target-version-code <int>` | 必填，宿主 APK versionCode |
+| `--abi <string>` | 可选，不传时按 `arm64-v8a` > `armeabi-v7a` > `x86_64` 优先取 |
+| `--out <dir>` | 可选，默认 `dist/` |
+
+产物：
+
+```
+dist/
+├── libapp.so          # 补丁内容，上传到 CDN
+└── manifest.json      # 元数据（version、md5、target_version_code、abi）
+```
+
+`--target-version-code` 必填，是因为补丁与宿主 APK 强绑定，APK 升级后旧补丁会自动失效。绑定原理见 [Architecture - versionCode 强绑定](https://pub.dev/documentation/flutter_patcher/latest/topics/Architecture-topic.html)。
+
+---
+
+## 性能与支持范围
+
+### 性能影响
+
+| 指标 | 影响 |
+|---|---|
+| APK 体积增量 | 约 80–120 KB（插件 native 代码 + Kotlin） |
+| 启动耗时增量 | 约 5–15 ms（反射替换 + SharedPreferences commit，profile 模式实测） |
+| 运行时内存 | 无额外占用（补丁加载后与原始 libapp.so 行为一致） |
+| 补丁文件大小 | 全量替换与原 libapp.so 同等大小（通常 5–15 MB）；启用 bsdiff 后降至数十 KB |
+
+> 以上数据基于 Pixel 6 / Flutter 3.24 测量，不同设备和 Flutter 版本可能有差异。
+
+### 支持范围
+
+| 维度 | 要求 |
+|---|---|
+| 平台 | 仅 Android |
+| Android minSdk | 24（Android 7.0） |
+| Flutter | 3.19 ~ 3.38 |
+| ABI | `armeabi-v7a` / `arm64-v8a` / `x86_64` |
+| NDK | 27.0.12077973+ |
+| AGP | 8.11.1+ |
+| Kotlin | 2.2.20+ |
+| Java / JVM | 17 |
+
+非 Android 平台调用所有 API 为 no-op（首次调用打印 warning，返回安全默认值，不抛异常）。
 
 ---
 

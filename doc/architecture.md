@@ -1,10 +1,20 @@
 # 技术架构
 
-> 内部工作原理与技术细节。正常接入 flutter_patcher 不需要理解这些内容；本文档面向需要排查问题、扩展功能或评估安全模型的开发者。
+> 本文档解释 flutter_patcher 内部如何工作，以及自托管服务端的实现要求。
+>
+> - 公开 API、pack CLI 参数、性能与兼容范围见 [API Reference](https://pub.dev/documentation/flutter_patcher/latest/topics/API-reference-topic.html)
+> - 崩溃保护与回滚机制见 [Crash protection](https://pub.dev/documentation/flutter_patcher/latest/topics/Crash-protection-topic.html)
+>
+> 本文按读者意图分为三块：
+> - **Part 1 · 工作原理** —— 想理解"它怎么生效"
+> - **Part 2 · 自托管服务端** —— 要自己搭后端分发补丁
+> - **Part 3 · 进阶配置** —— 标准接入流程不够用，需要定制启动时序或启用增量补丁
 
 ---
 
-## 工作原理
+## Part 1 · 工作原理
+
+### 整体流程
 
 整套系统涉及三个角色：
 
@@ -22,13 +32,65 @@
                                                      启动失败 → 自动回滚
 ```
 
-**用户设备冷启动时：** 插件在 `Application.attachBaseContext` 阶段完成熔断检查 → 补丁校验（versionCode + MD5 + 可选签名）→ 反射替换 `FlutterLoader` → 引导 Engine 加载补丁 `.so`。首帧渲染 + 前台存活 5 秒后标记为 verified，清除熔断计数。
+**用户设备冷启动时：** 插件在 `Application.attachBaseContext` 阶段完成熔断检查 → 补丁校验（versionCode + MD5 + 可选签名）→ 反射替换 `FlutterLoader` → 引导 Engine 加载补丁 `.so`。首帧渲染时立即清除熔断计数；Dart 错误钩子再守 5 秒（默认）捕捉首屏点击型异常。
 
-**补丁出问题时：** 用户最多经历一次白屏。下次冷启动插件检测到上次启动失败，自动回滚到 APK 内置版本，并将该补丁加入本地黑名单防止循环下载。完整流程见 [Crash guard](https://pub.dev/documentation/flutter_patcher/latest/topics/Crash-guard-topic.html)。
+**补丁出问题时：** 用户最多经历一次白屏。下次冷启动插件检测到上次启动失败，自动回滚到 APK 内置版本，并将该补丁加入本地黑名单防止循环下载。完整流程见 [Crash protection](https://pub.dev/documentation/flutter_patcher/latest/topics/Crash-protection-topic.html)。
 
 ---
 
-## 服务端集成
+### versionCode 强绑定
+
+`applyPatch` 落盘时将 `targetVersionCode` 写入 `patch_meta.json`。每次冷启动在反射替换之前比对，不匹配则删除补丁。
+
+即使服务端未下发 `targetVersionCode`，APK 升级后也会自动清除旧补丁——因为 `pack` 工具会在生成补丁时记录基准 APK 的 versionCode，客户端比对宿主 APK 的 `PackageInfo.versionCode` 不一致就丢弃。
+
+这是为什么 `pack --target-version-code` 是必填参数。
+
+---
+
+### 反射兼容矩阵
+
+| Flutter 版本 | `FlutterInjector` 字段 | `ensureInitializationComplete` 签名 |
+|---|---|---|
+| 3.19.x ~ 3.38.x | `flutterLoader` | `(Context, @Nullable String[])` |
+
+Flutter 大版本升级后如反射字段名变更，可临时适配：
+
+```dart
+await FlutterPatcher.init(loaderFieldCandidates: ['newFieldName', 'flutterLoader']);
+```
+
+升级后请检查 logcat 中 `FlutterPatcher/Hook` 标签的输出确认注入成功。
+
+---
+
+### 签名设计
+
+Ed25519 签名提供独立于 HTTPS 的完整性校验，防止 CDN 篡改。
+
+#### 算法与编码
+
+- **算法：** Ed25519
+- **公钥格式：** X.509 SubjectPublicKeyInfo DER → Base64
+- **签名消息体：** MD5 hex 字符串（32 字节 UTF-8）
+- **签名编码：** Base64
+
+签名对象不是补丁文件二进制本身，而是补丁的 MD5 hex 字符串。这样验签成本恒定（仅 32 字节），与文件大小解耦；MD5 已在前置阶段确保了文件内容完整性。
+
+#### 为什么 strictSignature 默认 true
+
+JDK 原生 Ed25519 需要 Android 13+（API 33）。低版本设备遇到带签名补丁时：
+
+- `strictSignature: true`（默认）→ **拒绝加载**
+- `strictSignature: false` → 跳过验签，仅靠 MD5 + HTTPS 防护
+
+默认拒绝是为了防止**降级攻击**：如果默认放行，攻击者可以伪造旧 API 设备（或强制运行在 API < 33 环境），让带恶意签名的补丁直接绕过验签。默认严格模式确保"只要配了签名，就一定真的会校验"，低版本设备宁可加载失败也不静默放行。
+
+服务端如何生成密钥与签名，见 [Part 2 · 服务端签名](#服务端签名)。
+
+---
+
+## Part 2 · 自托管服务端
 
 flutter_patcher 不绑定任何特定后端。你需要实现的最小协议如下。
 
@@ -66,54 +128,11 @@ GET /api/patch/check?app_version_code=100&abi=arm64-v8a&current_patch=1.0.0-h1
 
 服务端需按 ABI 分发不同的 `libapp.so`。客户端可通过 `await FlutterPatcher.deviceAbi` 获取当前设备 ABI，拼进 check-update 请求中。
 
-### 推荐功能
+### 服务端签名
 
-- **崩溃上报：** 接收客户端 `droppedCircuitBreaker` 事件，同一补丁短时间收到 N 次回滚事件后自动停止下发。
-- **灰度发布：** 1% → 5% → 20% → 100% 分阶段放量。
-- **紧急下架：** 从 check-update 返回中移除该版本即可。
+如果你要启用签名校验，需要在服务端完成两件事：生成密钥对（一次）与签名每个补丁（每次发布）。
 
-> 仓库 `example/tools/mock_server.dart` 提供了一个本地 mock server，可用于开发联调。
-
----
-
-## versionCode 强绑定
-
-`applyPatch` 落盘时将 `targetVersionCode` 写入 `patch_meta.json`。每次冷启动在反射替换之前比对，不匹配则删除补丁。
-
-即使服务端未下发 `targetVersionCode`，APK 升级后也会自动清除旧补丁——因为 `pack` 工具会在生成补丁时记录基准 APK 的 versionCode，客户端比对宿主 APK 的 `PackageInfo.versionCode` 不一致就丢弃。
-
-这是为什么 `pack --target-version-code` 是必填参数。
-
----
-
-## 反射兼容矩阵
-
-| Flutter 版本 | `FlutterInjector` 字段 | `ensureInitializationComplete` 签名 |
-|---|---|---|
-| 3.19.x ~ 3.38.x | `flutterLoader` | `(Context, @Nullable String[])` |
-
-Flutter 大版本升级后如反射字段名变更，可临时适配：
-
-```dart
-await FlutterPatcher.init(loaderFieldCandidates: ['newFieldName', 'flutterLoader']);
-```
-
-升级后请检查 logcat 中 `FlutterPatcher/Hook` 标签的输出确认注入成功。
-
----
-
-## 签名规范
-
-Ed25519 签名提供独立于 HTTPS 的完整性校验，防止 CDN 篡改。
-
-### 算法与编码
-
-- **算法：** Ed25519
-- **公钥格式：** X.509 SubjectPublicKeyInfo DER → Base64
-- **签名消息体：** MD5 hex 字符串（32 字节 UTF-8）
-- **签名编码：** Base64
-
-### 生成密钥对
+#### 生成密钥对
 
 ```bash
 # 开发机执行一次
@@ -122,7 +141,9 @@ openssl pkey -in patch_sk.pem -pubout -outform DER | base64 -w0
 # 输出类似 MCowBQYDK2VwAyEA...
 ```
 
-### 服务端签名
+私钥 `patch_sk.pem` 留在服务端构建机器；公钥 Base64 字符串配置到客户端 `FlutterPatcher.init(publicKeyBase64: ...)`。
+
+#### 签名补丁
 
 ```bash
 # 消息体 = MD5 hex 字符串的 UTF-8 字节
@@ -130,54 +151,19 @@ printf "%s" "0123456789abcdef0123456789abcdef" | \
   openssl pkeyutl -sign -inkey patch_sk.pem -rawin | base64 -w0
 ```
 
-### 客户端配置
+签名结果填入 check-update 响应的 `signature` 字段下发。签名消息体的设计原理见 [Part 1 · 签名设计](#签名设计)。
 
-```dart
-await FlutterPatcher.init(publicKeyBase64: 'MCowBQYDK2VwAyEA...');
-```
+### 推荐功能
 
-### 兼容性
+- **崩溃上报联动：** 接收客户端 `droppedCircuitBreaker` 事件（来自 `lastBootDiagnostic`），同一补丁短时间收到 N 次回滚事件后 **自动停止下发**
+- **灰度发布：** 1% → 5% → 20% → 100% 分阶段放量，配合监控指标观察 crash 率
+- **紧急下架：** 从 check-update 接口的返回中移除该版本即可，已安装的用户不受影响直到下次冷启动拉新配置
 
-JDK 原生 Ed25519 需要 Android 13+（API 33）。低版本设备默认拒绝带签名补丁（`strictSignature: true`）。
-
-```dart
-// 允许低版本设备降级为仅 MD5 + HTTPS 校验
-await FlutterPatcher.init(
-  publicKeyBase64: '...',
-  strictSignature: false,
-);
-```
+> 仓库 `example/tools/mock_server.dart` 提供了一个本地 mock server，可用于开发联调。
 
 ---
 
-## pack CLI 完整参数
-
-```bash
-dart run flutter_patcher:pack \
-    --apk build/app/outputs/flutter-apk/app-release.apk \
-    --version 1.0.0-h1 \
-    --target-version-code 100
-```
-
-| 参数 | 说明 |
-|---|---|
-| `--apk <path>` | 必填，release APK 路径 |
-| `--version <string>` | 必填，补丁版本标识 |
-| `--target-version-code <int>` | 必填，宿主 APK versionCode |
-| `--abi <string>` | 可选，不传时按 `arm64-v8a` > `armeabi-v7a` > `x86_64` 优先取 |
-| `--out <dir>` | 可选，默认 `dist/` |
-
-产出：
-
-```
-dist/
-├── libapp.so          # 补丁内容，上传到 CDN
-└── manifest.json      # 元数据（version、md5、target_version_code、abi）
-```
-
----
-
-## 进阶配置
+## Part 3 · 进阶配置
 
 ### 关闭自动初始化
 
@@ -205,58 +191,6 @@ class MyApp : FlutterApplication() {
 默认关闭。启用后补丁包体积从数 MB 降至数十 KB。需要手动集成 C 源码，约 10 分钟。
 
 详细步骤：将 [bsdiff-4.3](https://www.daemonology.net/bsdiff/) 的 `bspatch.c` 和 [bzip2-1.0.x](https://sourceware.org/pub/bzip2/) 源码放入 `android/src/main/cpp/third_party/`，将 `bspatch.c` 的 `main` 改为 `flutter_patcher_bspatch(old, new, patch)` 签名，重新构建。服务端用 `bsdiff` 命令生成差分包，下发时设 `mode: "bsdiff"` 并附上合成目标的 MD5。
-
-### 下载进度
-
-```dart
-final sub = FlutterPatcher.applyProgress.listen((p) {
-  if (p.phase == PatchApplyPhase.downloading) {
-    setState(() => _progress = p.fraction ?? 0);
-  }
-});
-final result = await FlutterPatcher.applyPatch(info);
-await sub.cancel();
-```
-
-也可用 `onProgress` 回调代替 Stream 订阅：
-
-```dart
-final result = await FlutterPatcher.applyPatch(info, onProgress: (p) => ...);
-```
-
-### 查询当前补丁版本
-
-```dart
-final version = await FlutterPatcher.currentVersion; // null = 无补丁
-```
-
----
-
-## 性能影响
-
-| 指标 | 影响 |
-|---|---|
-| APK 体积增量 | 约 80–120 KB（插件 native 代码 + Kotlin） |
-| 启动耗时增量 | 约 5–15 ms（反射替换 + SharedPreferences commit，profile 模式实测） |
-| 运行时内存 | 无额外占用（补丁加载后与原始 libapp.so 行为一致） |
-| 补丁文件大小 | 全量替换与原 libapp.so 同等大小（通常 5–15 MB）；启用 bsdiff 后降至数十 KB |
-
-> 以上数据基于 Pixel 6 / Flutter 3.24 测量，不同设备和 Flutter 版本可能有差异。
-
----
-
-## 支持范围
-
-| 维度 | 要求 |
-|---|---|
-| 平台 | 仅 Android |
-| Android minSdk | 24（Android 7.0） |
-| Flutter | 3.19 ~ 3.38 |
-| ABI | `armeabi-v7a` / `arm64-v8a` / `x86_64` |
-| NDK | 27.0.12077973+ |
-| AGP | 8.11.1+ |
-| Kotlin | 2.2.20+ |
-| Java / JVM | 17 |
 
 ---
 

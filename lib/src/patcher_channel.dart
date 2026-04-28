@@ -37,9 +37,9 @@ class PatcherChannel {
   /// 引导阶段 Dart 层未捕获异常上报。原生侧把它当成等同于 ApplicationExitInfo
   /// 的 REASON_CRASH 处理：crash_count += 1，达到阈值则熔断 + 删补丁 + 黑名单。
   ///
-  /// 调用时机：仅在「未 verified」窗口（首帧 + verifyAfter 秒之前），由
-  /// FlutterPatcher.init 安装的 PlatformDispatcher.onError / FlutterError.onError
-  /// 钩子触发。verified 之后的业务异常不调本方法。
+  /// 调用时机：仅在「verifyAfter 窗口内」（首帧渲染后到 verifyAfter 秒之间），
+  /// 由 FlutterPatcher.init 安装的 PlatformDispatcher.onError / FlutterError.onError
+  /// 钩子触发。窗口关闭后的业务异常不调本方法。
   static Future<void> reportDartBootError(String message) async {
     await channel.invokeMethod<void>('reportDartBootError', {
       'message': message,

@@ -24,4 +24,4 @@
 - 仓库 README：使用场景、5 分钟 demo、接入步骤
 - `docs/architecture.md`：原生 + Dart 双层架构与启动时序
 - `docs/api-reference.md`：完整 API 参考
-- `docs/crash-guard.md`：熔断器与回滚策略说明
+- `docs/crash-protection.md`：熔断器与回滚策略说明

@@ -33,7 +33,7 @@ export 'src/patch_info.dart';
 ///
 /// {@category Architecture}
 /// {@category API-reference}
-/// {@category Crash-guard}
+/// {@category Crash-protection}
 class FlutterPatcher {
   FlutterPatcher._();
 
@@ -41,6 +41,12 @@ class FlutterPatcher {
   static bool _bootReported = false;
   static bool _bootErrorReported = false;
   static bool _nonAndroidWarned = false;
+
+  /// Dart 错误钩子是否仍可向原生上报熔断（在 verifyAfter 窗口内为 true，窗口
+  /// 关闭后 [_BootVerifier._closeHookWindow] 翻为 false）。
+  /// 与 [_bootReported] 解耦：reportBootSuccess 在首帧立即触发，但钩子继续守
+  /// verifyAfter 秒以捕捉首屏点击型 Dart 异常。
+  static bool _dartHookActive = true;
 
   /// 非 Android 平台一次性 warning，避免跨平台项目静默看不出问题。
   /// 返回 true 表示"当前平台不支持，调用方应立即返回"。
@@ -110,11 +116,15 @@ class FlutterPatcher {
   ///   最后兜底。默认 **false**（安全）：宁可退回 APK 内置 .so，也不瞎设字段
   ///   导致不可预测的崩溃。只有你明确知道要这么做（比如适配新 Flutter 私有
   ///   API 调研过程中）才应打开。
-  /// - [verifyAfter] 首帧渲染后再观察多久"前台连续存活、无 crash"才算 verified
-  ///   并清熔断。默认 5 秒：覆盖首屏 + 一两次用户交互。
-  ///   - 越短：verified 越早，但漏掉首屏点击 crash 的概率越大
-  ///   - 越长：保护更严，但中途 crash 仍触发熔断的概率也越大
-  ///   注：计时只在 [AppLifecycleState.resumed] 状态累计；后台时挂起避免误清。
+  /// - [verifyAfter] 首帧渲染后 Dart 错误钩子继续监听的窗口长度，默认 5 秒。
+  ///   补丁的"安全确认"在首帧渲染时立即完成（清熔断 + 清 patch_loading），从此
+  ///   用户从最近任务划掉等"非崩溃退出"不会被误判为崩溃。本参数只控制 Dart 层
+  ///   错误钩子（PlatformDispatcher.onError / FlutterError.onError）还多守 N 秒，
+  ///   捕捉首屏点击立即触发的白屏型 Dart 异常。
+  ///   - 越短：误捕业务自身异常的概率越小，但漏掉首屏点击型 Dart 异常的可能越大
+  ///   - 越长：捕捉更多 post-first-frame Dart 故障，但用户在窗口内做的非补丁
+  ///     相关 Dart 异常也会被误计入熔断
+  ///   注：计时只在 [AppLifecycleState.resumed] 状态累计；后台时挂起。
   ///
   /// 约定：
   /// - 调用者应在 `main()` 里、`runApp()` 之前 `await` 本方法
@@ -159,12 +169,18 @@ class FlutterPatcher {
       _log('saveConfig failed: $e', s);
     }
 
-    // 3. 首帧 + 前台存活 verifyAfter 后清熔断
+    // 3. 首帧渲染立即清熔断；Dart 错误钩子再守 verifyAfter 秒
     _BootVerifier.start();
   }
 
-  /// 主动重置熔断计数（通常由 [init] 在首帧后自动触发）。
-  /// 暴露为 public，以防调用方希望在「业务首页渲染完」这一更严格的时机再清零。
+  /// 主动标记补丁可信，重置熔断计数（通常由 [init] 在首帧渲染时自动触发）。
+  ///
+  /// 暴露为 public 以便调用方在 **首帧之前** 用自定义判定逻辑提前确认补丁可信
+  /// （比如在 `main()` 里跑一段轻量自检，确认通过后立即调用本方法）。首帧后再
+  /// 调用是 no-op（[_BootVerifier] 已自动调过）。
+  ///
+  /// 注：本方法只清原生侧 patch_loading + crash_count。Dart 错误钩子的
+  /// verifyAfter 窗口由 [_BootVerifier] 独立计时，不受本调用影响。
   static Future<void> reportBootSuccess() async {
     if (_notAndroidGuard('reportBootSuccess')) return;
     if (_bootReported) return;
@@ -472,12 +488,14 @@ class FlutterPatcher {
   /// [_BootVerifier] 用：覆盖默认 5 秒，由 [init] 写入。
   static Duration _verifyAfter = const Duration(seconds: 5);
 
-  /// 装 PlatformDispatcher.onError + FlutterError.onError 双钩子，把"未 verified
-  /// 窗口内"的 Dart 未捕获异常上报给原生熔断器（语义等同于 ApplicationExitInfo
+  /// 装 PlatformDispatcher.onError + FlutterError.onError 双钩子，把 verifyAfter
+  /// 窗口内的 Dart 未捕获异常上报给原生熔断器（语义等同于 ApplicationExitInfo
   /// REASON_CRASH，弥补 framework 把异常吞掉、进程不死的检测盲区）。
   ///
-  /// 钩子在 [_bootReported]（即 _BootVerifier verified）之前一次性生效，verified
-  /// 之后回退到调用前的原 handler，业务异常照常走宿主自有的错误处理。
+  /// 钩子始终保持安装状态，但只在 [_dartHookActive] = true 期间真正向原生上报；
+  /// 窗口关闭后变成透明转发原 handler。这样既不会重复 install/uninstall（避免和
+  /// 业务自己装的 handler 互相打架），也保证 verifyAfter 后的业务异常不会被误
+  /// 归到补丁头上。
   static void _installBootErrorCatchers() {
     final priorPlatformHandler = PlatformDispatcher.instance.onError;
     PlatformDispatcher.instance.onError = (error, stack) {
@@ -494,9 +512,9 @@ class FlutterPatcher {
     };
   }
 
-  /// "未 verified 窗口"内一次性上报。verified 之后或已上报过都直接 no-op。
+  /// verifyAfter 窗口内一次性上报。窗口已关闭或已上报过都直接 no-op。
   static void _maybeReportBootError(Object error, StackTrace? stack) {
-    if (_bootReported) return;
+    if (!_dartHookActive) return;
     if (_bootErrorReported) return;
     _bootErrorReported = true;
     final msg = error.toString();
@@ -521,27 +539,27 @@ class PatcherException implements Exception {
   String toString() => 'PatcherException: $message';
 }
 
-/// 三层 boot 成功判定：Engine 加载 + 首帧渲染 + 前台连续存活 [FlutterPatcher._verifyAfter]。
+/// 解耦的两段式 boot 验证：
 ///
-/// # 为什么三层都要
-/// 仅"首帧渲染"作为 verified 依据，会漏掉"首屏点一下立刻 crash"的场景 ——
-/// 那种 crash 之前已 markBootSuccess，下次冷启动 patch_loading=false，熔断不会
-/// 触发，用户陷入"装着坏补丁的 app 持续 crash"的循环。
+/// 1. **首帧渲染 → 立即 [FlutterPatcher.reportBootSuccess]**
+///    清原生侧 patch_loading + crash_count，避免"用户从最近任务划掉"等非崩溃
+///    退出在 API < 30 设备上被误判为崩溃。原生侧仍保留 last_booting_pid，下
+///    次冷启动 API 30+ 仍可通过 ApplicationExitInfo 检测首帧后才发生的 native
+///    crash / ANR。
 ///
-/// 三层判定全过才算真 verified：
-/// 1. Engine 加载成功（reflection 替换 + libapp.so dlopen） — 由 LoaderHook 保证
-/// 2. 首帧渲染完成（[WidgetsBinding.addPostFrameCallback] 第一次回调）
-/// 3. App 在 [AppLifecycleState.resumed] 状态连续存活 N 秒不 crash
+/// 2. **首帧 + 前台累计存活 [FlutterPatcher._verifyAfter] → 关闭 Dart 错误钩子**
+///    Dart 层 throw 被 framework 吞掉、进程不死的"白屏"故障由钩子捕获并上报
+///    熔断；窗口关闭后业务自己的异常不再被归到补丁。
 ///
-/// 只在 resumed 时累计：避免用户启动后立刻 home 出去，Dart isolate 被挂起期间
-/// 的"无 crash"被错误计入存活时间。
+/// 只在 [AppLifecycleState.resumed] 累计：避免用户启动后立刻 home 出去，Dart
+/// isolate 被挂起期间的"无异常"被错误计入存活时间。
 class _BootVerifier with WidgetsBindingObserver {
   static _BootVerifier? _instance;
 
   Duration _foregroundElapsed = Duration.zero;
   DateTime? _resumedAt;
   Timer? _timer;
-  bool _verified = false;
+  bool _windowClosed = false;
 
   /// 等首帧后启动 verifier。多次调用幂等。
   static void start() {
@@ -552,6 +570,10 @@ class _BootVerifier with WidgetsBindingObserver {
   }
 
   void _begin() {
+    // 首帧渲染：立即标记补丁可信，清原生 patch_loading + crash_count。
+    // Dart 错误钩子继续在 verifyAfter 秒内监听首屏点击型故障。
+    FlutterPatcher.reportBootSuccess();
+
     final binding = WidgetsBinding.instance;
     binding.addObserver(this);
     // 首帧渲染时通常已在 resumed；保险起见显式判一下当前 state
@@ -564,7 +586,7 @@ class _BootVerifier with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (_verified) return;
+    if (_windowClosed) return;
     if (state == AppLifecycleState.resumed) {
       _resumedAt = DateTime.now();
       _scheduleCheck();
@@ -582,17 +604,17 @@ class _BootVerifier with WidgetsBindingObserver {
     final remaining = FlutterPatcher._verifyAfter - _foregroundElapsed;
     _timer?.cancel();
     if (remaining <= Duration.zero) {
-      _markVerified();
+      _closeHookWindow();
       return;
     }
-    _timer = Timer(remaining, _markVerified);
+    _timer = Timer(remaining, _closeHookWindow);
   }
 
-  void _markVerified() {
-    if (_verified) return;
-    _verified = true;
+  void _closeHookWindow() {
+    if (_windowClosed) return;
+    _windowClosed = true;
     WidgetsBinding.instance.removeObserver(this);
     _timer?.cancel();
-    FlutterPatcher.reportBootSuccess();
+    FlutterPatcher._dartHookActive = false;
   }
 }

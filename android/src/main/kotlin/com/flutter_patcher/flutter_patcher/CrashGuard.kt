@@ -11,19 +11,26 @@ import java.io.File
 /**
  * 熔断器：防止补丁导致启动崩溃时无限重启。
  *
- * 状态机：
+ * 状态机（解耦版）：
  * 1. Application.attachBaseContext → [markBooting] 写 patch_loading=true（commit 同步）+ pid
- * 2. Dart 首帧 → [markBootSuccess] 写 patch_loading=false + crash_count=0
+ * 2. Dart 首帧 → [markBootSuccess] 立即清 patch_loading=false + crash_count=0；
+ *    **保留** last_booting_pid 给下次冷启动的 ExitInfo 查询
+ * 3. Dart 首帧 + verifyAfter 秒 → 卸载 Dart 错误钩子（仅 Dart 层动作，不触原生）
  *
- * 下次冷启动若发现 patch_loading=true，按 Android 版本走两套策略：
+ * 下次冷启动 [shouldLoadPatch] 综合判定：
  *
- * - **API 30+**：通过 [ActivityManager.getHistoricalProcessExitReasons] 拿到精确死因。
- *   只有 [ApplicationExitInfo.REASON_CRASH] / [ApplicationExitInfo.REASON_CRASH_NATIVE]
- *   / [ApplicationExitInfo.REASON_ANR] / [ApplicationExitInfo.REASON_INITIALIZATION_FAILURE]
- *   计入 crash_count；用户从最近任务划掉、系统 OOM 等不计入。
- * - **API < 30**：朴素策略——`patch_loading=true` 即视为崩溃。没有 ApplicationExitInfo，
- *   不再做时间窗启发式（fail-fast，理由：长尾设备上 5–10% 的不准确不值得引入复杂度）。
- *   业务侧若想宽容点，可显式 `FlutterPatcher.init(maxCrashCount: 2)`。
+ * - **API 30+ 且有 pid 记录**：通过 [ActivityManager.getHistoricalProcessExitReasons]
+ *   拿到精确死因。覆盖首帧前后所有崩溃。只有 [ApplicationExitInfo.REASON_CRASH]
+ *   / [ApplicationExitInfo.REASON_CRASH_NATIVE] / [ApplicationExitInfo.REASON_ANR]
+ *   / [ApplicationExitInfo.REASON_INITIALIZATION_FAILURE] 计入 crash_count；
+ *   用户从最近任务划掉、系统 OOM 等不计入。
+ * - **API < 30 或 ExitInfo 无记录**：退回到 patch_loading 兜底——
+ *   patch_loading=true（首帧前死了）→ 视为崩溃；
+ *   patch_loading=false（首帧后死的）→ 不计崩溃。
+ *
+ * API < 30 因此存在已知盲区：补丁加载首帧后才发生的 native crash / ANR 不会被
+ * 检测（Dart 层异常仍由 verifyAfter 窗口内的 Dart 错误钩子捕获）。覆盖率约
+ * 5–10% 的存量长尾设备，业务侧若无法接受可显式调高 `maxCrashCount`。
  *
  * 当 crash_count 累计 >= [PatcherConfig.maxCrashCount] 次，自动删除补丁并拒绝加载。
  */
@@ -43,17 +50,20 @@ internal class CrashGuard(private val context: Context) {
      */
     fun shouldLoadPatch(onTrip: ((crashCount: Int) -> Unit)? = null): Boolean {
         val threshold = PatcherConfig.maxCrashCount(context)
+        val patchLoading = sp.getBoolean(PatcherConfig.KEY_PATCH_LOADING, false)
+        val lastPid = sp.getInt(PatcherConfig.KEY_LAST_BOOTING_PID, -1)
 
-        if (sp.getBoolean(PatcherConfig.KEY_PATCH_LOADING, false)) {
-            val verdict = classifyPreviousExit()
-            if (verdict.isCrash) {
-                val count = recordCrashAndMaybeTrip(verdict.reasonName, onTrip)
-                if (count >= threshold) return false
-            } else {
-                // 非崩溃退出（API 30+ ExitInfo 判定为用户主动关 / 系统 OOM 等）：清标记，不动 crash_count。
-                sp.edit().putBoolean(PatcherConfig.KEY_PATCH_LOADING, false).commit()
-                Log.i(TAG, "previous boot ended without crash (${verdict.reasonName}), not counting")
-            }
+        val verdict = classifyPreviousSession(patchLoading, lastPid)
+        if (verdict.isCrash) {
+            val count = recordCrashAndMaybeTrip(verdict.reasonName, onTrip)
+            if (count >= threshold) return false
+        } else if (patchLoading || lastPid > 0) {
+            // 非崩溃但状态未清：清掉以免下次冷启动重复处理同一会话
+            sp.edit()
+                .putBoolean(PatcherConfig.KEY_PATCH_LOADING, false)
+                .remove(PatcherConfig.KEY_LAST_BOOTING_PID)
+                .commit()
+            Log.i(TAG, "previous session ended without crash (${verdict.reasonName})")
         }
 
         return sp.getInt(PatcherConfig.KEY_CRASH_COUNT, 0) < threshold
@@ -108,12 +118,18 @@ internal class CrashGuard(private val context: Context) {
             .commit()
     }
 
-    /** Dart 首帧渲染完成：真正的「补丁加载成功」。重置计数，清启动元数据。 */
+    /**
+     * Dart 首帧渲染完成：补丁可信，立即清 patch_loading + crash_count。
+     *
+     * 注意：故意 **不清** [PatcherConfig.KEY_LAST_BOOTING_PID]。下次冷启动
+     * [shouldLoadPatch] 仍可用这个 pid 查 [ApplicationExitInfo]，从而捕捉首帧
+     * 后才发生的 native crash / ANR —— 那一刻 patch_loading 已清，不能再作为
+     * 崩溃信号。pid 在 [shouldLoadPatch] 处理完一次会话后清除。
+     */
     fun markBootSuccess() {
         sp.edit()
             .putBoolean(PatcherConfig.KEY_PATCH_LOADING, false)
             .putInt(PatcherConfig.KEY_CRASH_COUNT, 0)
-            .remove(PatcherConfig.KEY_LAST_BOOTING_PID)
             .commit()
     }
 
@@ -127,38 +143,45 @@ internal class CrashGuard(private val context: Context) {
     }
 
     /**
-     * 解析上次「booting」进程的死亡原因。
+     * 综合 [patchLoading] 与 [lastPid] 判定上次会话是否崩溃。
      *
-     * - API 30+ 走 ApplicationExitInfo 精确分类
-     * - API < 30 或 ExitInfo 查不到记录 → 朴素策略：直接判定为崩溃
+     * - API 30+ 且有 pid 记录 → 优先用 [ApplicationExitInfo] 精确分类。覆盖首帧
+     *   前后所有崩溃；用户主动关闭 / 系统 OOM 等不计崩溃。
+     * - API < 30 或 ExitInfo 拿不到记录 → 退回到 [patchLoading] 兜底信号。
+     *   patchLoading=true（首帧前死了）→ 崩溃；patchLoading=false（首帧后死的，
+     *   或本就没启动过）→ 非崩溃。
      */
-    private fun classifyPreviousExit(): ExitVerdict {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            val lastPid = sp.getInt(PatcherConfig.KEY_LAST_BOOTING_PID, -1)
-            if (lastPid > 0) {
-                val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
-                val record = try {
-                    am?.getHistoricalProcessExitReasons(context.packageName, lastPid, 1)
-                        ?.firstOrNull()
-                } catch (e: Throwable) {
-                    Log.w(TAG, "getHistoricalProcessExitReasons failed", e)
-                    null
+    private fun classifyPreviousSession(patchLoading: Boolean, lastPid: Int): ExitVerdict {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && lastPid > 0) {
+            val record = queryExitInfo(lastPid)
+            if (record != null) {
+                val isCrash = when (record.reason) {
+                    ApplicationExitInfo.REASON_CRASH,
+                    ApplicationExitInfo.REASON_CRASH_NATIVE,
+                    ApplicationExitInfo.REASON_ANR,
+                    ApplicationExitInfo.REASON_INITIALIZATION_FAILURE -> true
+                    else -> false
                 }
-                if (record != null) {
-                    val isCrash = when (record.reason) {
-                        ApplicationExitInfo.REASON_CRASH,
-                        ApplicationExitInfo.REASON_CRASH_NATIVE,
-                        ApplicationExitInfo.REASON_ANR,
-                        ApplicationExitInfo.REASON_INITIALIZATION_FAILURE -> true
-                        else -> false
-                    }
-                    return ExitVerdict(isCrash, reasonNameApi30(record.reason))
-                }
+                return ExitVerdict(isCrash, reasonNameApi30(record.reason))
             }
+            // ExitInfo 队列已被新进程挤出（罕见）：退回到 patchLoading 兜底
         }
 
-        // API < 30 或 ExitInfo 无记录：朴素策略，patch_loading=true 即视为崩溃。
-        return ExitVerdict(true, "NO_FIRST_FRAME")
+        return if (patchLoading) {
+            ExitVerdict(true, "NO_FIRST_FRAME")
+        } else {
+            ExitVerdict(false, "NO_RECORD")
+        }
+    }
+
+    private fun queryExitInfo(pid: Int): ApplicationExitInfo? {
+        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+        return try {
+            am?.getHistoricalProcessExitReasons(context.packageName, pid, 1)?.firstOrNull()
+        } catch (e: Throwable) {
+            Log.w(TAG, "getHistoricalProcessExitReasons failed", e)
+            null
+        }
     }
 
     private fun deletePatchFiles() {

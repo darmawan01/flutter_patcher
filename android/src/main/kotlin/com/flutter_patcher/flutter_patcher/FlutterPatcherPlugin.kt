@@ -22,7 +22,7 @@ import io.flutter.plugin.common.MethodChannel.Result
  * - saveConfig(publicKeyBase64, maxCrashCount, strictSignature,
  *              loaderFieldCandidates, loaderFallbackHeuristic)
  * - markBooting()               — Dart init 最开头调用，补写一次「启动中」
- * - reportBootSuccess()         — Dart 首帧 + verifyAfter 秒后调用，清熔断
+ * - reportBootSuccess()         — Dart 首帧渲染时调用，清熔断
  * - reportDartBootError(Map)    — 引导阶段 Dart 未捕获异常上报，等同一次真崩溃
  * - applyPatch(Map) -> Map{ok, error, message}
  * - rollback()
@@ -167,7 +167,7 @@ class FlutterPatcherPlugin :
     }
 
     /**
-     * Dart 侧 PlatformDispatcher.onError / FlutterError.onError 在「未 verified」窗口
+     * Dart 侧 PlatformDispatcher.onError / FlutterError.onError 在「verifyAfter 窗口内」
      * 抓到的未捕获异常 ⇒ 等同 ApplicationExitInfo.REASON_CRASH 处理：crash_count += 1，
      * 达阈值则 onTrip 回调里走完整的"加黑名单 + 记诊断 + 删补丁"链路。
      *
