@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.os.Build
 import android.util.Log
+import org.json.JSONArray
 
 /**
  * 热更新运行时配置读写，统一走 SharedPreferences。
@@ -58,6 +59,29 @@ internal object PatcherConfig {
     fun prefs(context: Context): SharedPreferences =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
+    internal fun encodeLoaderFieldCandidates(fields: List<String>): String {
+        val normalized = fields
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+        return JSONArray(normalized).toString()
+    }
+
+    internal fun decodeLoaderFieldCandidates(raw: Any?): List<String> {
+        return when (raw) {
+            is String -> try {
+                val arr = JSONArray(raw)
+                List(arr.length()) { arr.optString(it) }
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() }
+                    .distinct()
+            } catch (_: Exception) {
+                emptyList()
+            }
+            else -> emptyList()
+        }
+    }
+
     fun saveConfig(
         context: Context,
         publicKeyBase64: String,
@@ -70,7 +94,7 @@ internal object PatcherConfig {
             .putString(KEY_PUBLIC_KEY, publicKeyBase64)
             .putInt(KEY_MAX_CRASH, maxCrashCount.coerceAtLeast(1))
             .putBoolean(KEY_STRICT_SIG, strictSignature)
-            .putStringSet(KEY_LOADER_FIELDS, loaderFieldCandidates.toSet())
+            .putString(KEY_LOADER_FIELDS, encodeLoaderFieldCandidates(loaderFieldCandidates))
             .putBoolean(KEY_LOADER_HEURISTIC, loaderFallbackHeuristic)
             .apply()
     }
@@ -85,7 +109,7 @@ internal object PatcherConfig {
         prefs(context).getBoolean(KEY_STRICT_SIG, DEFAULT_STRICT_SIG)
 
     fun loaderFieldCandidates(context: Context): List<String> =
-        prefs(context).getStringSet(KEY_LOADER_FIELDS, null)?.toList() ?: emptyList()
+        decodeLoaderFieldCandidates(prefs(context).all[KEY_LOADER_FIELDS])
 
     fun loaderFallbackHeuristic(context: Context): Boolean =
         prefs(context).getBoolean(KEY_LOADER_HEURISTIC, DEFAULT_LOADER_HEURISTIC)

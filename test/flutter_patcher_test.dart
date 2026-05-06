@@ -10,7 +10,6 @@ void main() {
         'md5': 'd41d8cd98f00b204e9800998ecf8427e',
         'signature': 'sig-base64',
         'targetVersionCode': 100,
-        'mode': 'full',
       });
 
       expect(info.version, '1.0.1-h1');
@@ -18,7 +17,6 @@ void main() {
       expect(info.md5, 'd41d8cd98f00b204e9800998ecf8427e');
       expect(info.signature, 'sig-base64');
       expect(info.targetVersionCode, 100);
-      expect(info.mode, PatchMode.full);
     });
 
     test('accepts snake_case aliases for cross-language backends', () {
@@ -27,17 +25,13 @@ void main() {
         'patch_url': 'https://example.com/p2.so',
         'md5': '00',
         'target_version_code': '200',
-        'patchMode': 'bsdiff',
-        'target_md5': 'aabb',
       });
 
       expect(info.patchUrl, 'https://example.com/p2.so');
       expect(info.targetVersionCode, 200);
-      expect(info.mode, PatchMode.bsdiff);
-      expect(info.targetMd5, 'aabb');
     });
 
-    test('toJson omits null targetVersionCode but keeps mode', () {
+    test('toJson omits null targetVersionCode', () {
       const info = PatchInfo(
         version: 'v1',
         patchUrl: 'https://example.com/x.so',
@@ -45,7 +39,7 @@ void main() {
       );
       final json = info.toJson();
       expect(json.containsKey('targetVersionCode'), isFalse);
-      expect(json['mode'], 'full');
+      expect(json.containsKey('mode'), isFalse);
     });
   });
 

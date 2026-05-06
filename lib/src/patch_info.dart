@@ -1,19 +1,3 @@
-/// 补丁打包方式。
-enum PatchMode {
-  /// 全量 libapp.so 下载，直接替换。
-  full,
-
-  /// 差分包，需要在端侧与基础 libapp.so 合成。要求插件开启 native bsdiff
-  /// 模块（见 README 的 bsdiff 集成指南）。
-  bsdiff,
-}
-
-PatchMode _parseMode(Object? raw) {
-  final s = (raw is String ? raw : '').toLowerCase();
-  if (s == 'bsdiff' || s == 'diff' || s == 'delta') return PatchMode.bsdiff;
-  return PatchMode.full;
-}
-
 /// 补丁元信息 —— 插件真正需要的最小字段集。
 ///
 /// 这是一个纯值对象，**不绑定任何后端协议**。无论你的更新来源是 HTTP JSON、
@@ -31,18 +15,14 @@ PatchMode _parseMode(Object? raw) {
 ///
 /// ## 可选
 /// - [signature]：Ed25519 签名，见 README
-/// - [mode] / [targetMd5]：bsdiff 差分模式相关
 class PatchInfo {
   /// 补丁版本号，例如 "1.0.1-h1"。
   final String version;
 
-  /// 补丁文件下载地址（HTTP/HTTPS）。
-  /// - mode=full   → 完整 libapp.so
-  /// - mode=bsdiff → bsdiff 差分文件
+  /// 补丁文件下载地址（HTTP/HTTPS），指向完整 `libapp.so`。
   final String patchUrl;
 
   /// 补丁文件本身的 MD5（小写 hex）。用于下载完整性校验。
-  /// 对 bsdiff 模式，这是 **差分文件** 的 MD5，不是合成后 .so 的 MD5。
   final String md5;
 
   /// 对 MD5 hex 做 Ed25519 签名后 Base64 编码的字符串。
@@ -58,13 +38,6 @@ class PatchInfo {
   ///   meta，作为兜底；宿主升级后一样会被识别为 mismatch
   final int? targetVersionCode;
 
-  /// 补丁模式，默认 [PatchMode.full]。
-  final PatchMode mode;
-
-  /// bsdiff 模式下，**合成后** libapp.so 的预期 MD5。
-  /// full 模式可留空。
-  final String targetMd5;
-
   /// 原始 JSON，保留未来扩展字段（如果你是用 [PatchInfo.fromJson] 构造的）。
   /// 直接构造不会用到。
   final Map<String, dynamic> raw;
@@ -75,8 +48,6 @@ class PatchInfo {
     required this.md5,
     this.signature = '',
     this.targetVersionCode,
-    this.mode = PatchMode.full,
-    this.targetMd5 = '',
     this.raw = const {},
   });
 
@@ -87,8 +58,6 @@ class PatchInfo {
   /// 兼容的字段名：
   /// - `patchUrl` / `patch_url`
   /// - `targetVersionCode` / `target_version_code`
-  /// - `targetMd5` / `target_md5`
-  /// - `mode` / `patchMode`
   ///
   /// 未识别的字段会被保留在 [raw] 里不影响解析。
   factory PatchInfo.fromJson(Map<String, dynamic> json) {
@@ -102,8 +71,6 @@ class PatchInfo {
       md5: (json['md5'] ?? '') as String,
       signature: (json['signature'] ?? '') as String,
       targetVersionCode: parsedVc,
-      mode: _parseMode(json['mode'] ?? json['patchMode']),
-      targetMd5: (json['targetMd5'] ?? json['target_md5'] ?? '') as String,
       raw: Map<String, dynamic>.from(json),
     );
   }
@@ -115,14 +82,12 @@ class PatchInfo {
     'md5': md5,
     'signature': signature,
     if (targetVersionCode != null) 'targetVersionCode': targetVersionCode,
-    'mode': mode.name,
-    'targetMd5': targetMd5,
   };
 
   @override
   String toString() =>
       'PatchInfo('
-      'version=$version, mode=${mode.name}, url=$patchUrl, '
+      'version=$version, url=$patchUrl, '
       'md5=$md5, sig=${signature.isEmpty ? 'none' : '***'})';
 }
 
@@ -134,9 +99,6 @@ enum PatchApplyPhase {
   /// 下载完成，正在做 MD5 + 签名校验。
   verifying,
 
-  /// bsdiff 模式合成 .so 中（full 模式不会进入此阶段）。
-  bsdiffMerging,
-
   /// 原子 rename + 写 meta.json。
   finalizing,
 }
@@ -147,8 +109,6 @@ PatchApplyPhase _parsePhase(String? s) {
       return PatchApplyPhase.downloading;
     case 'verifying':
       return PatchApplyPhase.verifying;
-    case 'bsdiff_merging':
-      return PatchApplyPhase.bsdiffMerging;
     case 'finalizing':
       return PatchApplyPhase.finalizing;
     default:
@@ -207,7 +167,7 @@ class PatchApplyProgress {
 ///
 /// 调用方可据此决定不同处理：是自动重试、告警服务端、还是提示用户。
 enum PatchApplyError {
-  /// 服务端下发的 JSON 缺 version / patchUrl / md5 等必填字段，或 bsdiff 模式没传 targetMd5。
+  /// 服务端下发的 JSON 缺 version / patchUrl / md5 等必填字段。
   /// → 告警服务端，无法自动恢复。
   invalidArgs,
 
@@ -215,10 +175,6 @@ enum PatchApplyError {
   /// → **告警服务端立即下架该补丁**；不要自动重试。如需调试覆盖，调用
   /// [FlutterPatcher.clearBlacklist]。
   blacklisted,
-
-  /// 服务端下发了 bsdiff 模式的补丁，但当前宿主未编译 bsdiff native 模块。
-  /// → 告警服务端，针对此客户端切回 full 模式。
-  bsdiffDisabled,
 
   /// 下载失败（重试 N 次后依然失败）。
   /// → 稍后重试，通常网络环境变化后自动恢复。
@@ -231,13 +187,6 @@ enum PatchApplyError {
   /// Ed25519 签名验证失败，或 API < 33 且 strict 模式拒绝。
   /// → **可能被篡改**，不建议自动重试。
   signatureInvalid,
-
-  /// native bsdiff 合成失败。通常是基础 libapp.so 与服务端预期不一致。
-  /// → 检查 APK 版本和服务端差分生成逻辑。
-  bsdiffApplyFailed,
-
-  /// bsdiff 合成后的 .so md5 与 targetMd5 不符。同 [bsdiffApplyFailed] 的排查方向。
-  targetMd5Mismatch,
 
   /// 磁盘 / 文件系统错误（磁盘满、权限、rename 失败）。
   /// → 稍后重试。
@@ -254,18 +203,12 @@ PatchApplyError _parseApplyError(String? code) {
       return PatchApplyError.invalidArgs;
     case 'BLACKLISTED':
       return PatchApplyError.blacklisted;
-    case 'BSDIFF_DISABLED':
-      return PatchApplyError.bsdiffDisabled;
     case 'NETWORK':
       return PatchApplyError.network;
     case 'MD5_MISMATCH':
       return PatchApplyError.md5Mismatch;
     case 'SIGNATURE_INVALID':
       return PatchApplyError.signatureInvalid;
-    case 'BSDIFF_APPLY_FAILED':
-      return PatchApplyError.bsdiffApplyFailed;
-    case 'TARGET_MD5_MISMATCH':
-      return PatchApplyError.targetMd5Mismatch;
     case 'IO_ERROR':
       return PatchApplyError.ioError;
     default:

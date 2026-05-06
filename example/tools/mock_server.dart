@@ -2,14 +2,14 @@
 // 非生产代码。只是为了让 dev 能本地 cover "checkUpdate → download → apply" 整条 HTTP 链路。
 //
 // 用法：
-//   dart run example/tools/mock_server.dart <dist-dir> [port=8080]
+//   dart run tools/mock_server.dart <dist-dir> [port=8080]
 //
 // 前置：先用 pack 打好补丁到 <dist-dir>
 //   dart run flutter_patcher:pack \
 //       --apk path/to/app-release.apk \
 //       --version dev-1 --target-version-code 1
 //   # 产出 dist/libapp.so + dist/manifest.json
-//   dart run example/tools/mock_server.dart dist 8080
+//   dart run tools/mock_server.dart dist 8080
 //
 // 暴露的两个端点（监听 0.0.0.0，手机同 Wi-Fi 可直连）：
 //   GET /check       → PatchInfo JSON（version + md5 + patchUrl 自动填）

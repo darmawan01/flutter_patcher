@@ -1,7 +1,6 @@
 package com.flutter_patcher.flutter_patcher
 
 import android.content.Context
-import android.os.Build
 import android.os.SystemClock
 import android.util.Log
 import org.json.JSONObject
@@ -9,7 +8,6 @@ import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
-import java.util.zip.ZipFile
 
 /**
  * 补丁应用过程的阶段 / 进度回调。
@@ -23,14 +21,13 @@ internal typealias ProgressCallback = (phase: String, received: Long, total: Lon
 internal object Phase {
     const val DOWNLOADING = "downloading"
     const val VERIFYING = "verifying"
-    const val BSDIFF_MERGING = "bsdiff_merging"
     const val FINALIZING = "finalizing"
 }
 
 /**
- * 补丁生命周期管理：下载、验签、（可选）bsdiff 合成、落盘、回滚、查询路径。
+ * 补丁生命周期管理：下载、验签、落盘、回滚、查询路径。
  *
- * 所有外部输入（URL、md5、signature、版本号、mode、targetMd5）都从入参读取，
+ * 所有外部输入（URL、md5、signature、版本号）都从入参读取，
  * 不依赖任何硬编码配置。
  *
  * [progress] 可选，用于把各阶段 / 下载进度同步到 UI（由 Plugin 经 EventChannel
@@ -49,7 +46,6 @@ internal class PatchManager(
         private const val MAX_RETRIES = 3
 
         private const val MODE_FULL = "full"
-        private const val MODE_BSDIFF = "bsdiff"
         private val MD5_HEX = Regex("^[0-9a-fA-F]{32}$")
 
         /** 下载进度节流，避免频繁跨线程发事件淹没 UI。 */
@@ -62,7 +58,6 @@ internal class PatchManager(
             url: String,
             md5: String,
             mode: String,
-            targetMd5: String,
             targetVersionCode: Long?,
             currentVersionCode: Long
         ): ApplyResult? {
@@ -78,16 +73,10 @@ internal class PatchManager(
                     "md5 must be 32 hex chars"
                 )
             }
-            if (mode != MODE_FULL && mode != MODE_BSDIFF) {
+            if (mode != MODE_FULL) {
                 return ApplyResult.failure(
                     ApplyErrorCode.INVALID_ARGS,
-                    "unsupported mode: $mode"
-                )
-            }
-            if (mode == MODE_BSDIFF && !MD5_HEX.matches(targetMd5)) {
-                return ApplyResult.failure(
-                    ApplyErrorCode.INVALID_ARGS,
-                    "bsdiff mode requires targetMd5 as 32 hex chars"
+                    "unsupported mode: $mode; only full patches are supported"
                 )
             }
             if (targetVersionCode != null) {
@@ -105,6 +94,16 @@ internal class PatchManager(
                 }
             }
             return null
+        }
+
+        internal fun isSameInstalledPatch(
+            currentMeta: Pair<String, String>?,
+            version: String,
+            md5: String
+        ): Boolean {
+            if (currentMeta == null) return false
+            return currentMeta.first == version &&
+                currentMeta.second.equals(md5, ignoreCase = true)
         }
     }
 
@@ -205,8 +204,7 @@ internal class PatchManager(
                     BootDiagnosticStore.DROPPED_SIGNATURE_INVALID
                 SignatureVerifier.VerifyResult.OK -> error("unreachable")
             }
-            // 黑名单使用 downloadMd5：它与 applyPatch 入参 md5 保持一致，确保 bsdiff
-            // 崩溃后再次下发同一差分包时也能在下载前命中黑名单。
+            // 黑名单使用 downloadMd5：它与 applyPatch 入参 md5 保持一致。
             onDrop?.invoke(
                 status,
                 version,
@@ -244,7 +242,6 @@ internal class PatchManager(
         val md5 = (info["md5"] as? String).orEmpty()
         val signature = (info["signature"] as? String).orEmpty()
         val mode = ((info["mode"] as? String) ?: MODE_FULL).lowercase()
-        val targetMd5 = (info["targetMd5"] as? String).orEmpty()
         val hasTargetVersionCode = info.containsKey("targetVersionCode")
         val serverTargetVc = (info["targetVersionCode"] as? Number)?.toLong()
         if (hasTargetVersionCode && serverTargetVc == null) {
@@ -260,19 +257,11 @@ internal class PatchManager(
             url = url,
             md5 = md5,
             mode = mode,
-            targetMd5 = targetMd5,
             targetVersionCode = serverTargetVc,
             currentVersionCode = currentVc
         )?.let {
             Log.w(TAG, "applyPatch: ${it.message}")
             return it
-        }
-        if (mode == MODE_BSDIFF && !BsDiffBridge.isAvailable()) {
-            Log.w(TAG, "bsdiff module not built, rejecting diff patch (see README)")
-            return ApplyResult.failure(
-                ApplyErrorCode.BSDIFF_DISABLED,
-                "bsdiff native module not built; integrate upstream sources per README"
-            )
         }
         if (serverTargetVc == null && currentVc == PatcherConfig.INVALID_VERSION_CODE) {
             return ApplyResult.failure(
@@ -290,8 +279,8 @@ internal class PatchManager(
                     "call FlutterPatcher.clearBlacklist() to reset (debug only)"
             )
         }
-        if (version == currentVersion()) {
-            Log.d(TAG, "patch $version already installed")
+        if (isSameInstalledPatch(currentMeta(), version, md5)) {
+            Log.d(TAG, "patch $version with md5=$md5 already installed")
             return ApplyResult.SUCCESS
         }
 
@@ -334,51 +323,8 @@ internal class PatchManager(
                     )
                 }
 
-                val finalSo: File
-                val effectiveMd5: String
-
-                if (mode == MODE_BSDIFF) {
-                    progress?.invoke(Phase.BSDIFF_MERGING, 0L, 0L)
-                    val baseSo = extractBaseLibappSo() ?: run {
-                        Log.e(TAG, "cannot extract base libapp.so from APK")
-                        downloaded.delete()
-                        return ApplyResult.failure(
-                            ApplyErrorCode.IO_ERROR,
-                            "cannot extract base libapp.so from APK"
-                        )
-                    }
-                    val merged = File(patchDir, "temp_merged.so")
-                    val rc = BsDiffBridge.applyPatch(
-                        oldPath = baseSo.absolutePath,
-                        newPath = merged.absolutePath,
-                        patchPath = downloaded.absolutePath
-                    )
-                    baseSo.delete()
-                    downloaded.delete()
-
-                    if (rc != BsDiffBridge.OK) {
-                        Log.e(TAG, "bsdiff apply failed rc=$rc")
-                        merged.delete()
-                        return ApplyResult.failure(
-                            ApplyErrorCode.BSDIFF_APPLY_FAILED,
-                            "native bsdiff rc=$rc"
-                        )
-                    }
-                    val mergedMd5 = SignatureVerifier.md5(merged)
-                    if (!mergedMd5.equals(targetMd5, ignoreCase = true)) {
-                        Log.e(TAG, "merged md5 mismatch: expected=$targetMd5 actual=$mergedMd5")
-                        merged.delete()
-                        return ApplyResult.failure(
-                            ApplyErrorCode.TARGET_MD5_MISMATCH,
-                            "expected=$targetMd5 actual=$mergedMd5"
-                        )
-                    }
-                    finalSo = merged
-                    effectiveMd5 = mergedMd5
-                } else {
-                    finalSo = downloaded
-                    effectiveMd5 = md5
-                }
+                val finalSo = downloaded
+                val effectiveMd5 = md5
 
                 // targetVersionCode：优先取服务端下发；否则以当下宿主 APK 的
                 // versionCode 兜底写入。启动时会强校验此字段 == 当前 APK versionCode。
@@ -386,7 +332,6 @@ internal class PatchManager(
 
                 val meta = JSONObject().apply {
                     put("version", version)
-                    put("mode", mode)
                     put("downloadMd5", md5)
                     put("effectiveMd5", effectiveMd5)
                     put("signature", signature)
@@ -587,37 +532,6 @@ internal class PatchManager(
         }
         // 结尾再发一次，保证 UI 能刷到 100%
         onBytes?.invoke(received, total)
-    }
-
-    /**
-     * 从当前 APK 里抽出 `lib/<abi>/libapp.so` 到临时文件，供 bsdiff 合成用。
-     * ABI 优先 Build.SUPPORTED_ABIS 首位（设备首选）。
-     * 调用方负责删除返回的文件。
-     */
-    private fun extractBaseLibappSo(): File? {
-        val apkPath = context.applicationInfo.sourceDir ?: return null
-        val abis = Build.SUPPORTED_ABIS ?: arrayOf("arm64-v8a")
-
-        return try {
-            ZipFile(apkPath).use { zip ->
-                for (abi in abis) {
-                    val entry = zip.getEntry("lib/$abi/libapp.so") ?: continue
-                    val dest = File(patchDir, "base_libapp_$abi.so")
-                    zip.getInputStream(entry).use { input ->
-                        dest.outputStream().use { output ->
-                            input.copyTo(output, bufferSize = 8192)
-                        }
-                    }
-                    Log.d(TAG, "extracted base libapp.so for $abi (${dest.length()} bytes)")
-                    return dest
-                }
-                Log.e(TAG, "no libapp.so found in APK for abis=${abis.toList()}")
-                null
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "extract base libapp.so failed", e)
-            null
-        }
     }
 
     private fun deletePatch() {

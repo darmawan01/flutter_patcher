@@ -267,7 +267,7 @@ printf "%s" "0123456789abcdef0123456789abcdef" | \
 
 `strictSignature` 默认为 `true`。
 
-在不支持原生 Ed25519 的 Android 低版本设备上，如果收到带签名的补丁，插件会拒绝加载，而不是静默跳过验签。
+在 Android API < 33（无 JDK 原生 Ed25519）的设备上，如果收到带签名的补丁，插件会拒绝加载，而不是静默跳过验签。API ≥ 33 时该开关无影响，永远走原生校验。
 
 这样可以避免“配置了签名，但部分设备实际没有校验”的安全误判。
 
@@ -336,6 +336,8 @@ await FlutterPatcher.init(
 
 仓库中的 `example/tools/mock_server.dart` 提供了一个本地 mock server，可用于开发联调。
 
+它依赖 `example/pubspec.yaml` 中 `dev_dependencies` 的 `crypto`，因此只能在 `example/` 工作区内运行（先 `cd example && flutter pub get`），不会被打包进 release apk，也不应在生产中使用。
+
 你可以先用 mock server 跑通完整流程，再接入自己的服务端。
 
 ---
@@ -374,36 +376,6 @@ class MyApp : FlutterApplication() {
 ```
 
 只有在你确认工程提前创建了 `FlutterEngine` 时，才需要这样配置。
-
----
-
-### bsdiff 差分补丁
-
-默认情况下，`flutter_patcher` 使用 full 模式补丁，也就是完整下发 `libapp.so`。
-
-如果你希望显著减小补丁体积，可以启用 `bsdiff` 差分补丁。启用后，补丁体积通常可以从数 MB 降至数十 KB，但需要额外集成 native `bspatch` 模块。
-
-使用 bsdiff 时，服务端需要下发：
-
-```json
-{
-  "mode": "bsdiff",
-  "patch_url": "https://cdn.example.com/patches/arm64-v8a/app.patch",
-  "md5": "DIFF_FILE_MD5",
-  "target_md5": "MERGED_LIBAPP_SO_MD5",
-  "target_version_code": 100
-}
-```
-
-其中：
-
-| 字段 | 说明 |
-|---|---|
-| `md5` | 差分补丁文件的 MD5 |
-| `target_md5` | 合成后的完整 `libapp.so` 的 MD5 |
-| `target_version_code` | 差分补丁适用的宿主 APK `versionCode` |
-
-如果未启用 native bsdiff 模块，却收到了 bsdiff 补丁，客户端会返回 `bsdiffDisabled`。
 
 ---
 

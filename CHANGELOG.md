@@ -9,14 +9,14 @@
 - **崩溃熔断 / 自动回滚**：基于 `ApplicationExitInfo` 的 `REASON_CRASH` 计数 + Dart 层 `PlatformDispatcher.onError` 钩子，达到 `maxCrashCount`（默认 1，fail-fast）后自动删补丁、入黑名单、回退 APK 内置版本。
 - **首帧 verify 清熔断**：补丁加载后，前台连续存活 `verifyAfter`（默认 5s）才视为 verified 并清零熔断计数。
 - **本地黑名单**：自动入黑名单的补丁不会再次安装，避免反复崩溃。可通过 `FlutterPatcher.blacklist` / `clearBlacklist` 查询/清空。
-- **进度事件流**：`FlutterPatcher.applyProgress` 暴露 `downloading` / `verifying` / `bsdiff_merging` / `finalizing` 阶段事件。
-- **bsdiff 增量补丁**：可选的 `mode: bsdiff` 模式支持差量分发，减少补丁包体积。
-- **CLI 打包工具**：`dart run flutter_patcher:pack` 从两次构建的 `libapp.so` 生成签名补丁包。
+- **进度事件流**：`FlutterPatcher.applyProgress` 暴露 `downloading` / `verifying` / `finalizing` 阶段事件。
+- **CLI 打包工具**：`dart run flutter_patcher:pack` 从 release APK 提取 `libapp.so` 并生成补丁 manifest。
 
 ### 已知限制
 
 - **仅 Android**。iOS / Web / 桌面平台调用所有 API 为 no-op（首次调用打印 warning）。
 - **Ed25519 严格模式需 Android API 33+**。低于 API 33 的设备在 `strictSignature: true`（默认）时会拒绝带签名的补丁。
+- **仅支持 full 模式补丁**。差分补丁能力未随 0.1.0 发布，避免暴露未验证路径。
 - 不支持 Dart AOT 之外的代码热更新（不替换 `flutter_assets`、`isolate_snapshot_data` 等）。
 
 ### 文档

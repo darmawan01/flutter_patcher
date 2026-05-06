@@ -22,7 +22,7 @@ export 'src/patch_info.dart';
 /// - [checkUpdate]    向服务端发起补丁检查
 /// - [applyPatch]     下载、验签、落盘（下次冷启动生效）
 /// - [rollback]       手动删除当前补丁
-/// - [currentVersion] 当前已生效的补丁版本号
+/// - [currentVersion] 磁盘上当前已就绪的补丁版本号；下次冷启动后才会被 Flutter Engine 加载生效
 ///
 /// 补丁的加载（反射替换 FlutterLoader）发生在原生 Application.attachBaseContext，
 /// **早于** Dart 引擎启动；Dart 侧的 [init] 做：
@@ -70,8 +70,8 @@ class FlutterPatcher {
   /// [applyPatch] 过程中的阶段 / 进度事件流（广播）。
   ///
   /// 在调用 [applyPatch] **之前** 订阅即可；一次调用期间会依次收到
-  /// `downloading`（可能多次，带字节数）→ `verifying` → 可选 `bsdiff_merging`
-  /// → `finalizing` 各阶段事件。非 Android 平台返回空流。
+  /// `downloading`（可能多次，带字节数）→ `verifying` → `finalizing`
+  /// 各阶段事件。非 Android 平台返回空流。
   ///
   /// ```dart
   /// final sub = FlutterPatcher.applyProgress.listen((p) {
@@ -80,7 +80,6 @@ class FlutterPatcher {
   ///       setState(() => _progress = p.fraction ?? 0);
   ///       break;
   ///     case PatchApplyPhase.verifying:
-  ///     case PatchApplyPhase.bsdiffMerging:
   ///     case PatchApplyPhase.finalizing:
   ///       // 可刷新"处理中..."UI
   ///       break;
@@ -207,9 +206,7 @@ class FlutterPatcher {
   ///     "patchUrl": "https://.../libapp.so",
   ///     "md5": "<32 hex>",
   ///     "targetVersionCode": 100,
-  ///     "signature": "<base64 ed25519 sig of md5 hex>",
-  ///     "mode": "full",
-  ///     "targetMd5": ""
+  ///     "signature": "<base64 ed25519 sig of md5 hex>"
   ///   }
   /// }
   /// ```
@@ -244,10 +241,8 @@ class FlutterPatcher {
   /// 1. HTTP 下载到临时文件（指数退避重试）
   /// 2. MD5 校验
   /// 3. Ed25519 签名校验（[PatchInfo.signature] 非空且配置了公钥时）
-  /// 4. 如果 [PatchInfo.mode] = bsdiff → 从 APK 提取基础 libapp.so，与下载的
-  ///    差分文件合成新 .so，比对 [PatchInfo.targetMd5]
-  /// 5. 原子 rename 到补丁目录
-  /// 6. 写入 meta.json，标记「下次冷启动生效」
+  /// 4. 原子 rename 到补丁目录
+  /// 5. 写入 meta.json，标记「下次冷启动生效」
   ///
   /// 返回 [PatchApplyResult]：`ok=true` 表示补丁已就绪；否则 [PatchApplyResult.error]
   /// 给出失败分类，见 [PatchApplyError]。本次调用 **不会** 立即切换运行时的
@@ -388,7 +383,10 @@ class FlutterPatcher {
     }
   }
 
-  /// 当前已生效/已就绪的补丁版本号，无补丁返回 null。
+  /// 磁盘上当前已就绪的补丁版本号（来自 `meta.json`）。
+  ///
+  /// `applyPatch` 成功后立即可读到新版本，但需冷启动后 Flutter Engine 才会真正加载该 `libapp.so`。
+  /// 无补丁时返回 `null`。
   static Future<String?> get currentVersion async {
     if (_notAndroidGuard('currentVersion')) return null;
     try {

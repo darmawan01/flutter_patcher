@@ -53,23 +53,8 @@ android {
             abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86_64'
         }
 
-        externalNativeBuild {
-            cmake {
-                cppFlags ''
-                arguments '-DANDROID_STL=none'
-            }
-        }
-
         // 让 AGP 把本插件的 consumer R8 规则合并到宿主 release build
         consumerProguardFiles 'consumer-rules.pro'
-    }
-
-    // bsdiff native 模块。即使 third_party/ 目录为空也能构建（会编 stub）。
-    externalNativeBuild {
-        cmake {
-            path file('src/main/cpp/CMakeLists.txt')
-            version '3.22.1'
-        }
     }
 
     dependencies {

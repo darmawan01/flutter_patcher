@@ -126,7 +126,6 @@ Future<int> main(List<String> argv) async {
     'md5': md5Digest,
     'targetVersionCode': targetVersionCode,
     'abi': abi,
-    'mode': 'full',
   };
   final manifestPath = '${outDir.path}/manifest.json';
   File(manifestPath).writeAsStringSync(

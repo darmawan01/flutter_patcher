@@ -14,15 +14,10 @@ Android 端 Flutter 热更新插件。
 ## 功能特性
 
 - Android 端 Flutter Dart 代码热更新
-- 补丁在下次冷启动生效，不侵入当前运行进程
-- 自托管补丁分发，不绑定第三方云服务
-- 支持 `applyPatch` URL 下载和 `applyPatchBytes` 字节应用
-- 每个补丁与宿主 APK `versionCode` 强绑定，避免 APK 升级后误加载旧补丁
-- MD5 校验与可选 Ed25519 签名校验
-- 启动失败自动回滚，本地黑名单防止重复加载同一个坏补丁
-- 提供 `pack` CLI 从 release APK 中提取补丁
-- 支持 full 补丁，可选 bsdiff 差分补丁
-- 提供启动诊断、黑名单查询和示例 App
+- 补丁冷启动生效，运行时无侵入
+- 自托管分发，不绑定第三方云服务
+- 内置安全校验、崩溃回滚与坏补丁黑名单
+- 提供打包 CLI、诊断能力和示例 App
 
 ---
 
@@ -51,11 +46,9 @@ Android 端 Flutter 热更新插件。
 
 ### 适合的场景
 
-- 项目只需要 Android 热更新，或 iOS 可以接受正常发版
-- 补丁数据需要自托管，后端协议需要完全自主控制
-- 团队可以自行搭建补丁分发服务
+- 项目只需要 Android 热更新，iOS 可以接受正常发版
+- 团队可以自行搭建补丁分发服务，补丁数据需要自托管
 - 希望在小范围灰度中快速修复 Dart 层问题
-- 可以接受“补丁下次冷启动生效”，不要求当前进程内立即生效
 
 ### 不适合的场景
 
@@ -74,15 +67,17 @@ Android 端 Flutter 热更新插件。
 | 项目 | 要求 |
 |---|---|
 | 平台 | Android only |
-| Android minSdk | 24 |
+| Dart SDK | `^3.10.7` |
 | Flutter | `>=3.3.0`；loader hook verified on 3.19 ~ 3.38 |
+| Android `minSdk` | 24 |
+| Android `compileSdk` | 36 |
 | ABI | `armeabi-v7a` / `arm64-v8a` / `x86_64` |
 | NDK | 27.0.12077973+ |
 | AGP | 8.11.1+ |
 | Kotlin | 2.2.20+ |
 | Java / JVM | 17 |
 
-非 Android 平台调用 API 时会 no-op：不会执行补丁逻辑，不会抛异常，首次调用会打印 warning。
+在 iOS、macOS、Windows、Linux 和 Web 上，本库 API 可以被安全调用，但不会执行热更新逻辑，也不会抛出异常；首次调用时会打印一条“不支持当前平台”的日志。
 
 ---
 
@@ -160,21 +155,17 @@ await FlutterPatcher.init(
 客户端只需要拿到一份 `PatchInfo`，然后调用 `applyPatch`。`PatchInfo` 通常由你自己的更新接口下发，由业务侧解析后构造：
 
 ```dart
-Future<void> applyPatchFromYourBackend(Map<String, dynamic> resp) async {
-  final result = await FlutterPatcher.applyPatch(
-    PatchInfo(
-      version: resp['version'] as String,
-      patchUrl: resp['patch_url'] as String,
-      md5: resp['md5'] as String,
-      targetVersionCode: resp['target_version_code'] as int,
-    ),
-  );
+final result = await FlutterPatcher.applyPatch(
+  PatchInfo(
+    version: 'fix-1',
+    patchUrl: 'https://your-cdn.com/v100/libapp.so',
+    md5: '0123456789abcdef0123456789abcdef',
+    targetVersionCode: 100,
+  ),
+);
 
-  if (result.ok) {
-    showRestartHint();
-  } else {
-    debugPrint('patch failed: ${result.error} / ${result.message}');
-  }
+if (result.ok) {
+  // 补丁需要冷启动后才生效，可弹窗引导用户
 }
 ```
 
@@ -226,7 +217,7 @@ dist/
 
 将 `libapp.so` 和 `manifest.json` 上传到你的 CDN 或对象存储即可。
 
-服务端协议、签名规范、bsdiff、自动初始化关闭等进阶配置见 [架构设计](https://pub.dev/documentation/flutter_patcher/latest/topics/Architecture-topic.html)。
+服务端协议、签名规范、自动初始化关闭等进阶配置见 [架构设计](https://pub.dev/documentation/flutter_patcher/latest/topics/Architecture-topic.html)。
 
 ### 5. 回滚补丁
 
@@ -316,24 +307,6 @@ Android 10 及以下识别能力有限，建议结合线上崩溃监控和服务
 
 ---
 
-## 补丁发布检查清单
-
-发布补丁前逐条确认：
-
-- [ ] 只修改了 `lib/` 下的 Dart 源码
-- [ ] `pubspec.yaml` 的 dependencies 无 native 侧变化
-- [ ] `pubspec.yaml` 的 assets 无变化
-- [ ] `android/` 目录无变化
-- [ ] Flutter SDK / Flutter Engine 未升级
-- [ ] `--target-version-code` 与目标宿主 APK 的 `versionCode` 一致
-- [ ] 已按 ABI 生成对应补丁
-- [ ] 已在真机上验证补丁加载和回滚
-- [ ] 已配置灰度、监控和紧急下架方案
-
-任一条不满足，建议走正常发版。
-
----
-
 ## 安全
 
 `flutter_patcher` 提供基础完整性校验和可选签名机制。
@@ -369,6 +342,7 @@ Android 10 及以下识别能力有限，建议结合线上崩溃监控和服务
 final diag = await FlutterPatcher.lastBootDiagnostic;
 
 if (diag != null && !diag.isHealthy) {
+  // 替换为你自己的埋点 SDK：Firebase Analytics / Sentry / 自家上报等
   analytics.report('patch_dropped', {
     'status': diag.status.name,
     'patch_version': diag.patchVersion,
@@ -409,21 +383,22 @@ A: 是的。`libapp.so` 与 Flutter Engine / Dart 运行时深度绑定，不同
 
 ### Q: 用户跳过了中间版本的补丁，直接收到最新补丁会怎样？
 
-A: full 模式下，每个补丁都是完整的 `libapp.so`，不依赖之前的补丁。用户可以从无补丁或旧补丁直接跳到最新补丁。
-
-如果使用 bsdiff，需要确保差分补丁的基准版本与设备当前 APK 匹配。
+A: 每个补丁都是完整的 `libapp.so`，不依赖之前的补丁。用户可以从无补丁或旧补丁直接跳到最新补丁。
 
 ### Q: 开发期间怎么快速验证，不想每次上传 CDN？
 
-A: 可以使用 `file://` scheme 读取设备本地路径，或者使用仓库自带的 mock server：
+A: 可以使用 `file://` scheme 读取设备本地路径，或者使用仓库自带的 mock server。注意 `mock_server.dart` 依赖 `example/` 的 `dev_dependencies: crypto`，必须在 `example/` 目录下运行：
 
 ```bash
+cd example
+flutter pub get
+
 dart run flutter_patcher:pack \
   --apk path/to/app-release.apk \
   --version dev-1 \
   --target-version-code 1
 
-dart run example/tools/mock_server.dart dist 8080
+dart run tools/mock_server.dart dist 8080
 ```
 
 客户端 `patchUrl` 填：
@@ -462,7 +437,7 @@ A: 补丁只适用于构建它时对应的基准 APK。绑定 `targetVersionCode
 
 - [API 参考](https://pub.dev/documentation/flutter_patcher/latest/topics/API-reference-topic.html) — 初始化、检查更新、应用补丁、回滚、诊断、错误码和 CLI 参数
 - [崩溃保护文档](https://pub.dev/documentation/flutter_patcher/latest/topics/Crash-protection-topic.html) — 崩溃保护、自动回滚、黑名单、Android 版本差异和诊断状态
-- [架构设计](https://pub.dev/documentation/flutter_patcher/latest/topics/Architecture-topic.html) — 工作原理、自托管服务端协议、签名、bsdiff 和进阶配置
+- [架构设计](https://pub.dev/documentation/flutter_patcher/latest/topics/Architecture-topic.html) — 工作原理、自托管服务端协议、签名和进阶配置
 
 ---
 

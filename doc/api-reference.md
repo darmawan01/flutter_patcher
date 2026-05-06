@@ -40,7 +40,7 @@ await FlutterPatcher.init(
 | ------------------------- | -------------------------- |
 | `publicKeyBase64`         | Ed25519 公钥。`PatchInfo.signature` 为空时跳过签名校验；补丁带签名但未配置公钥会拒绝应用 |
 | `maxCrashCount`           | 连续崩溃多少次后熔断补丁，默认 `1`        |
-| `strictSignature`         | API < 33 遇到带签名补丁时是否拒绝应用    |
+| `strictSignature`         | API < 33（无 JDK 原生 Ed25519）遇到带签名补丁时是否拒绝应用；API ≥ 33 时该开关无影响，永远走原生校验 |
 | `loaderFieldCandidates`   | FlutterLoader 字段名候选，一般无需修改 |
 | `loaderFallbackHeuristic` | 候选字段失败后是否启用兜底扫描            |
 | `verifyAfter`             | 启动后用于判断补丁稳定的保护窗口           |
@@ -180,9 +180,6 @@ if (result.ok) {
 | `md5Mismatch`       | 下载文件 MD5 不匹配                    | 检查 CDN 或服务端 MD5      |
 | `signatureInvalid`  | 签名校验失败                          | 上报安全事件，不重试           |
 | `ioError`           | 文件写入、rename 或权限失败               | 稍后重试                 |
-| `bsdiffDisabled`    | 收到 bsdiff 补丁，但未启用 native bsdiff | 改用 full 补丁或启用 bsdiff |
-| `bsdiffApplyFailed` | bsdiff 合成失败                     | 检查目标 APK 是否匹配        |
-| `targetMd5Mismatch` | 合成后的 `.so` MD5 不匹配              | 检查差分包和基准版本           |
 | `unknown`           | 未分类异常                           | 查看 `result.message`  |
 
 ---
@@ -199,7 +196,7 @@ FlutterPatcher.applyProgress.listen((p) {
 
 | 字段              | 说明                                                          |
 | --------------- | ----------------------------------------------------------- |
-| `phase`         | 当前阶段：`downloading`、`verifying`、`bsdiffMerging`、`finalizing` |
+| `phase`         | 当前阶段：`downloading`、`verifying`、`finalizing` |
 | `bytesReceived` | 已下载字节数，仅下载阶段有意义                                             |
 | `totalBytes`    | 总字节数，服务端未返回时为 `-1`                                           |
 | `fraction`      | 下载进度，范围 `0.0 ~ 1.0`；未知时为 `null`                             |
@@ -248,7 +245,7 @@ final String abi = await FlutterPatcher.deviceAbi;
 | API              | 说明                                                  |
 | ---------------- | --------------------------------------------------- |
 | `appVersionCode` | 当前 APK 的 `versionCode`。API 28+ 使用 `longVersionCode` |
-| `currentVersion` | 当前已生效或已就绪的补丁版本。无补丁时为 `null`                         |
+| `currentVersion` | 磁盘上当前已就绪的补丁版本（来自 `meta.json`）。`applyPatch` 成功后立即可读到新版本，但需冷启动后 Flutter Engine 才会加载生效；无补丁时为 `null` |
 | `deviceAbi`      | 当前设备 ABI，可用于 check-update 请求                        |
 
 ---
@@ -325,7 +322,7 @@ await FlutterPatcher.clearBlacklist();
 | 字段              | 类型         | 说明     |
 | --------------- | ---------- | ------ |
 | `version`       | `String`   | 补丁版本   |
-| `md5`           | `String`   | 补丁文件 MD5；bsdiff 模式下为差分文件 MD5 |
+| `md5`           | `String`   | 补丁文件 MD5 |
 | `reason`        | `String`   | 入黑原因   |
 | `blacklistedAt` | `DateTime` | 入黑时间   |
 
@@ -368,16 +365,7 @@ final map = patch.toJson();
 | `md5`               | `String`               | 是         | 补丁文件 MD5，小写 32 位 hex      |
 | `signature`         | `String`               | 否         | Ed25519 签名，Base64。为空时跳过验签 |
 | `targetVersionCode` | `int?`                 | 推荐        | 补丁适用的宿主 APK `versionCode` |
-| `mode`              | `PatchMode`            | 否         | 补丁模式，默认 `PatchMode.full`  |
-| `targetMd5`         | `String`               | bsdiff 必填 | bsdiff 合成后 `.so` 的预期 MD5  |
 | `raw`               | `Map<String, dynamic>` | 否         | `fromJson` 保留的原始字段        |
-
-`PatchMode` 取值：
-
-| 值                  | 说明                              |
-| ------------------ | ------------------------------- |
-| `PatchMode.full`   | 完整 `libapp.so`，直接替换，默认模式        |
-| `PatchMode.bsdiff` | 差分补丁，端侧合成。需要启用 native bsdiff 模块 |
 
 ---
 
@@ -448,7 +436,7 @@ dist/
 | APK 体积增量 | 约 80–120 KB                       |
 | 启动耗时增量   | 约 5–15 ms                         |
 | 运行时内存    | 补丁加载后无额外常驻占用                      |
-| 补丁文件大小   | full 模式通常 5–15 MB；bsdiff 可降至数十 KB |
+| 补丁文件大小   | 通常 5–15 MB                          |
 
 > 以上数据基于 Pixel 6 / Flutter 3.24 测量。实际结果会受设备、Flutter 版本和构建配置影响。
 

@@ -14,7 +14,7 @@ class BlacklistEntry {
   /// 入黑补丁的 version（与 PatchInfo.version 对应）。
   final String version;
 
-  /// 入黑补丁的 md5（小写 hex；bsdiff 模式下是差分文件 md5）。
+  /// 入黑补丁的 md5（小写 hex）。
   final String md5;
 
   /// 入黑原因分类（原生常量，跨边界用字符串而非 enum 保留前向兼容）。
