@@ -384,8 +384,6 @@ internal class PatchManager(
                 // versionCode 兜底写入。启动时会强校验此字段 == 当前 APK versionCode。
                 val targetVersionCode = serverTargetVc ?: currentVc
 
-                val targetVersionCode = serverTargetVc ?: currentVc
-
                 val meta = JSONObject().apply {
                     put("version", version)
                     put("mode", mode)

@@ -47,7 +47,9 @@ await FlutterPatcher.init(
 
 ---
 
-## 检查更新
+## 检查更新（可选）
+
+> 插件提供一个可选的最小 check-update JSON 协议，主要用于快速接入、示例和本地联调。生产环境如果已有自己的更新、灰度或鉴权协议，建议直接解析业务响应并构造 `PatchInfo`，跳过本节。
 
 如果你使用插件内置的 check-update 协议，可以直接调用 `checkUpdate`：
 

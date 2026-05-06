@@ -1,6 +1,6 @@
-## 0.1.0
+## 0.1.0-alpha.1
 
-首次公开发布（Android-only beta）。
+首次公开发布（Android-only alpha）。pub.dev 预发布版本，API 仍可能在 0.1.0 正式版前调整。
 
 ### 核心能力
 
