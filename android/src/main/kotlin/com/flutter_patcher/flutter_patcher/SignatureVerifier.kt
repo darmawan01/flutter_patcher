@@ -103,9 +103,10 @@ internal object SignatureVerifier {
     /**
      * 完整校验（细粒度版本）：MD5 + 可选 Ed25519。返回失败原因分类。
      *
-     * 注意：[expectedMd5] 为空时归为 [VerifyResult.MD5_MISMATCH]（理论上调用方
-     * 应在调用前已校验 meta 完整性并归类为 META_CORRUPTED，此处兜底返回最接近
-     * 的语义）。
+     * 注意：[expectedMd5] 为空时整体跳过 MD5 与签名校验，直接返回
+     * [VerifyResult.OK]（调用方明确选择"不下发 md5"，仅依赖 HTTPS）。
+     * 启动路径目前仍依赖 meta.effectiveMd5 非空，故启动期不会走到这条分支；
+     * 该分支主要服务于 [PatchManager.applyPatch] 期间的重复使用。
      */
     fun verifyDetailed(
         file: File,
@@ -115,8 +116,8 @@ internal object SignatureVerifier {
         strictSignature: Boolean = true
     ): VerifyResult {
         if (expectedMd5.isEmpty()) {
-            Log.e(TAG, "expected md5 is empty, reject")
-            return VerifyResult.MD5_MISMATCH
+            Log.w(TAG, "expected md5 empty, skip md5 & signature verify")
+            return VerifyResult.OK
         }
         val actualMd5 = md5(file)
         if (!actualMd5.equals(expectedMd5, ignoreCase = true)) {

@@ -41,6 +41,42 @@ void main() {
       expect(json.containsKey('targetVersionCode'), isFalse);
       expect(json.containsKey('mode'), isFalse);
     });
+
+    test('md5 defaults to empty string when omitted from constructor', () {
+      const info = PatchInfo(
+        version: 'v1',
+        patchUrl: 'https://example.com/x.so',
+      );
+      expect(info.md5, '');
+      expect(info.signature, '');
+    });
+
+    test('fromJson without md5 yields empty md5 (optional field)', () {
+      final info = PatchInfo.fromJson({
+        'version': 'v1',
+        'patchUrl': 'https://example.com/x.so',
+      });
+      expect(info.md5, '');
+    });
+
+    test('toJson omits md5 key when md5 is empty', () {
+      const info = PatchInfo(
+        version: 'v1',
+        patchUrl: 'https://example.com/x.so',
+      );
+      final json = info.toJson();
+      expect(json.containsKey('md5'), isFalse);
+    });
+
+    test('toJson includes md5 key when md5 is non-empty', () {
+      const info = PatchInfo(
+        version: 'v1',
+        patchUrl: 'https://example.com/x.so',
+        md5: 'aa',
+      );
+      final json = info.toJson();
+      expect(json['md5'], 'aa');
+    });
   });
 
   group('PatchApplyResult', () {

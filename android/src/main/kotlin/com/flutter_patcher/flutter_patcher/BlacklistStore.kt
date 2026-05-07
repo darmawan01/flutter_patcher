@@ -107,6 +107,20 @@ internal object BlacklistStore {
         return false
     }
 
+    /**
+     * 仅以 version 维度命中黑名单。供"调用方未下发 md5"场景的下载前置检查。
+     * 同 version 任意 md5 条目都视为命中。
+     */
+    fun containsByVersion(context: Context, version: String): Boolean {
+        if (version.isEmpty()) return false
+        val arr = readArray(context)
+        for (i in 0 until arr.length()) {
+            val obj = arr.optJSONObject(i) ?: continue
+            if (obj.optString(FIELD_VERSION) == version) return true
+        }
+        return false
+    }
+
     /** 全部黑名单条目（旧→新顺序）。供 Dart 业务侧查询展示用。*/
     fun entries(context: Context): List<Map<String, Any?>> {
         val arr = readArray(context)

@@ -61,16 +61,18 @@ internal class PatchManager(
             targetVersionCode: Long?,
             currentVersionCode: Long
         ): ApplyResult? {
-            if (version.isBlank() || url.isBlank() || md5.isBlank()) {
+            if (version.isBlank() || url.isBlank()) {
                 return ApplyResult.failure(
                     ApplyErrorCode.INVALID_ARGS,
-                    "missing version/url/md5"
+                    "missing version/url"
                 )
             }
-            if (!MD5_HEX.matches(md5)) {
+            // md5 为可选字段：空串 = 调用方明确选择跳过 MD5 校验。
+            // 非空时仍强制 32 位 hex 格式，避免脏数据混入。
+            if (md5.isNotBlank() && !MD5_HEX.matches(md5)) {
                 return ApplyResult.failure(
                     ApplyErrorCode.INVALID_ARGS,
-                    "md5 must be 32 hex chars"
+                    "md5 must be 32 hex chars or empty"
                 )
             }
             if (mode != MODE_FULL) {
@@ -102,6 +104,8 @@ internal class PatchManager(
             md5: String
         ): Boolean {
             if (currentMeta == null) return false
+            // 下发 md5 为空时，仅以 version 判等（调用方已选择不下发 md5）。
+            if (md5.isBlank()) return currentMeta.first == version
             return currentMeta.first == version &&
                 currentMeta.second.equals(md5, ignoreCase = true)
         }
@@ -271,7 +275,13 @@ internal class PatchManager(
         }
         // 黑名单查询前置：在下载之前拦截，避免对已知坏补丁浪费流量。
         // 服务端再下发同一份 (version, md5) 也立即拒绝。
-        if (BlacklistStore.contains(context, version, md5)) {
+        // md5 为空时退化为仅 version 维度匹配（调用方已选择不下发 md5）。
+        val blacklistHit = if (md5.isBlank()) {
+            BlacklistStore.containsByVersion(context, version)
+        } else {
+            BlacklistStore.contains(context, version, md5)
+        }
+        if (blacklistHit) {
             Log.w(TAG, "applyPatch: (version=$version, md5=$md5) is blacklisted, reject")
             return ApplyResult.failure(
                 ApplyErrorCode.BLACKLISTED,
@@ -297,34 +307,40 @@ internal class PatchManager(
                 Log.d(TAG, "download ok: ${downloaded.length()} bytes (attempt=$attempt)")
 
                 // Step 1: MD5（区分于签名错误，给出独立错误码）
+                // 下发 md5 为空时跳过比对，但仍计算 actualMd5 写入 meta.effectiveMd5
+                // 作为运行时稳定键（黑名单 / 启动校验依赖此字段）。
                 progress?.invoke(Phase.VERIFYING, 0L, 0L)
                 val actualMd5 = SignatureVerifier.md5(downloaded)
-                if (!actualMd5.equals(md5, ignoreCase = true)) {
-                    Log.e(TAG, "md5 mismatch: expected=$md5 actual=$actualMd5")
-                    downloaded.delete()
-                    return ApplyResult.failure(
-                        ApplyErrorCode.MD5_MISMATCH,
-                        "expected=$md5 actual=$actualMd5"
-                    )
-                }
+                if (md5.isBlank()) {
+                    Log.w(TAG, "expected md5 empty, skip md5 & signature verify")
+                } else {
+                    if (!actualMd5.equals(md5, ignoreCase = true)) {
+                        Log.e(TAG, "md5 mismatch: expected=$md5 actual=$actualMd5")
+                        downloaded.delete()
+                        return ApplyResult.failure(
+                            ApplyErrorCode.MD5_MISMATCH,
+                            "expected=$md5 actual=$actualMd5"
+                        )
+                    }
 
-                // Step 2: signature
-                val publicKey = PatcherConfig.publicKey(context)
-                val strictSignature = PatcherConfig.strictSignature(context)
-                if (!SignatureVerifier.verifySignatureOnly(
-                        actualMd5.lowercase(), signature, publicKey, strictSignature
-                    )
-                ) {
-                    Log.e(TAG, "signature verify failed")
-                    downloaded.delete()
-                    return ApplyResult.failure(
-                        ApplyErrorCode.SIGNATURE_INVALID,
-                        "ed25519 signature verify failed"
-                    )
+                    // Step 2: signature（仅在 md5 非空时进行；签名输入即 md5 hex）
+                    val publicKey = PatcherConfig.publicKey(context)
+                    val strictSignature = PatcherConfig.strictSignature(context)
+                    if (!SignatureVerifier.verifySignatureOnly(
+                            actualMd5.lowercase(), signature, publicKey, strictSignature
+                        )
+                    ) {
+                        Log.e(TAG, "signature verify failed")
+                        downloaded.delete()
+                        return ApplyResult.failure(
+                            ApplyErrorCode.SIGNATURE_INVALID,
+                            "ed25519 signature verify failed"
+                        )
+                    }
                 }
 
                 val finalSo = downloaded
-                val effectiveMd5 = md5
+                val effectiveMd5 = actualMd5.lowercase()
 
                 // targetVersionCode：优先取服务端下发；否则以当下宿主 APK 的
                 // versionCode 兜底写入。启动时会强校验此字段 == 当前 APK versionCode。

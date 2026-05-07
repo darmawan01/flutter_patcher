@@ -7,14 +7,16 @@
 /// ## 必填
 /// - [version]：任意字符串，客户端用来判等（已是当前版本则跳过）
 /// - [patchUrl]：补丁文件 HTTPS 下载地址
-/// - [md5]：补丁文件本身的 MD5（**小写 hex**，32 字符）
 ///
 /// ## 强烈推荐
+/// - [md5]：补丁文件本身的 MD5（**小写 hex**，32 字符）。空字符串表示不下发
+///   MD5、跳过下载完整性校验，仅靠 HTTPS 防篡改。**注意**：md5 为空时签名校验
+///   也会一并跳过（签名设计是对 md5 hex 做 Ed25519，无 md5 即无签名输入）。
 /// - [targetVersionCode]：补丁针对的宿主 APK versionCode；保证 APK 升级后旧补丁
 ///   自动失效
 ///
 /// ## 可选
-/// - [signature]：Ed25519 签名，见 README
+/// - [signature]：Ed25519 签名，见 README。仅在 [md5] 非空时生效。
 class PatchInfo {
   /// 补丁版本号，例如 "1.0.1-h1"。
   final String version;
@@ -23,10 +25,11 @@ class PatchInfo {
   final String patchUrl;
 
   /// 补丁文件本身的 MD5（小写 hex）。用于下载完整性校验。
+  /// 空字符串表示不下发 MD5、跳过下载完整性校验（同时跳过签名校验），仅靠 HTTPS。
   final String md5;
 
   /// 对 MD5 hex 做 Ed25519 签名后 Base64 编码的字符串。
-  /// 空字符串表示不做签名校验，仅依赖 MD5 + 传输层安全。
+  /// 空字符串表示不做签名校验。当 [md5] 也为空时本字段会被忽略。
   final String signature;
 
   /// 补丁构建时绑定的宿主 APK `versionCode`（Android 的 `PackageInfo.versionCode` /
@@ -45,7 +48,7 @@ class PatchInfo {
   const PatchInfo({
     required this.version,
     required this.patchUrl,
-    required this.md5,
+    this.md5 = '',
     this.signature = '',
     this.targetVersionCode,
     this.raw = const {},
@@ -79,7 +82,7 @@ class PatchInfo {
   Map<String, dynamic> toJson() => {
     'version': version,
     'patchUrl': patchUrl,
-    'md5': md5,
+    if (md5.isNotEmpty) 'md5': md5,
     'signature': signature,
     if (targetVersionCode != null) 'targetVersionCode': targetVersionCode,
   };
@@ -88,7 +91,8 @@ class PatchInfo {
   String toString() =>
       'PatchInfo('
       'version=$version, url=$patchUrl, '
-      'md5=$md5, sig=${signature.isEmpty ? 'none' : '***'})';
+      'md5=${md5.isEmpty ? 'none' : md5}, '
+      'sig=${signature.isEmpty ? 'none' : '***'})';
 }
 
 /// [FlutterPatcher.applyPatch] 的阶段。
@@ -167,7 +171,7 @@ class PatchApplyProgress {
 ///
 /// 调用方可据此决定不同处理：是自动重试、告警服务端、还是提示用户。
 enum PatchApplyError {
-  /// 服务端下发的 JSON 缺 version / patchUrl / md5 等必填字段。
+  /// 服务端下发的 JSON 缺 version / patchUrl 等必填字段，或 md5 非空但格式错误。
   /// → 告警服务端，无法自动恢复。
   invalidArgs,
 

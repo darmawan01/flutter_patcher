@@ -98,7 +98,8 @@ class FlutterPatcher {
   /// 启动时调用。幂等。
   ///
   /// - [publicKeyBase64] X.509 SubjectPublicKeyInfo（DER）Base64 编码的 Ed25519
-  ///   公钥。为空时跳过签名校验，仅靠 MD5 + HTTPS 防篡改。
+  ///   公钥。为空时跳过签名校验，仅靠 MD5 + HTTPS 防篡改。若 [PatchInfo.md5]
+  ///   也为空则签名校验也会一并跳过（签名输入即 md5 hex）。
   /// - [maxCrashCount]   熔断器容忍的连续启动失败次数，默认 **1（fail-fast）**。
   ///   补丁加载后崩溃是明确"补丁有问题"信号，1 次崩溃即丢弃 + 入黑名单。
   ///   如需保留 0.0.x 时代的"崩 2 次才回滚"行为，显式传 `maxCrashCount: 2`。
@@ -239,8 +240,8 @@ class FlutterPatcher {
   ///
   /// 全流程（Android 原生侧实现）：
   /// 1. HTTP 下载到临时文件（指数退避重试）
-  /// 2. MD5 校验
-  /// 3. Ed25519 签名校验（[PatchInfo.signature] 非空且配置了公钥时）
+  /// 2. MD5 校验（[PatchInfo.md5] 为空时跳过；同时签名校验也一并跳过）
+  /// 3. Ed25519 签名校验（[PatchInfo.signature] 非空、配置了公钥、且 md5 非空时）
   /// 4. 原子 rename 到补丁目录
   /// 5. 写入 meta.json，标记「下次冷启动生效」
   ///
