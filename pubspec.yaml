@@ -1,6 +1,6 @@
 name: flutter_patcher
 description: Android libapp.so hotfix plugin with circuit breaker and Ed25519 signature verification.
-version: 0.1.0
+version: 0.1.1
 homepage: https://github.com/xuelinger2333/flutter_patcher
 repository: https://github.com/xuelinger2333/flutter_patcher
 issue_tracker: https://github.com/xuelinger2333/flutter_patcher/issues
@@ -14,17 +14,17 @@ topics:
   - signature-verification
 
 environment:
-  sdk: ^3.10.7
+  sdk: '>=3.0.0 <4.0.0'
   flutter: '>=3.3.0'
 
 dependencies:
   flutter:
     sdk: flutter
-  plugin_platform_interface: ^2.0.2
+  plugin_platform_interface: '>=2.0.2 <3.0.0'
   # `dart run flutter_patcher:pack` CLI 依赖 —— 运行时 app 里都会被 tree-shake 掉
-  archive: ^3.4.10
-  args: ^2.4.0
-  crypto: ^3.0.3
+  archive: '>=3.4.10 <5.0.0'
+  args: '>=2.4.0 <3.0.0'
+  crypto: '>=3.0.3 <4.0.0'
 
 dev_dependencies:
   flutter_test:

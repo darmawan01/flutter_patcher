@@ -1,3 +1,13 @@
+## 0.1.1
+
+### Changed
+
+- **`PatchInfo.md5` 改为可选字段**。空字符串表示调用方明确选择跳过下载完整性校验，仅靠 HTTPS 防篡改。空 md5 时签名校验也会一并跳过（Ed25519 输入即 md5 hex）。`toJson` 在 md5 为空时不输出 `md5` 键。
+- **`validatePatchArgs`**：md5 空串现在合法；非空时仍强制 32 位 hex。
+- **黑名单**：调用方未下发 md5 时，下载前置黑名单检查退化为仅 version 维度（新增 `BlacklistStore.containsByVersion`）。入黑时仍写入下载后实际计算的 md5 作为条目记录。
+- **meta.json 写入**：`effectiveMd5` 始终使用下载后实际计算的 md5（之前为下发 md5）。
+- **依赖约束放宽**：Dart SDK 约束从 `^3.10.7` 放宽为 `>=3.0.0 <4.0.0`，运行时依赖改为下限 + 宽上限；`archive` 允许 3.x 和 4.x，以减少宿主项目依赖冲突。
+
 ## 0.1.0
 
 首次公开发布（Android-only beta）。

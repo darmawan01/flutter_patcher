@@ -1,74 +1,75 @@
 # flutter_patcher
 
+**English** | [简体中文](README-zh.md)
+
 [![Platform](https://img.shields.io/badge/platform-Android_only-brightgreen)](https://flutter.dev)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Status](https://img.shields.io/badge/status-beta-orange)]()
 
-Android 端 Flutter 热更新插件。  
-通过下发补丁 `libapp.so`，让 Dart 代码变更在下次冷启动时生效，并在补丁启动失败时自动回滚。
+Hot-update plugin for Flutter on Android.
+By delivering a `libapp.so` patch, your Dart code changes take effect on the next cold start, and the plugin automatically rolls back if a patch fails to boot.
 
-> 当前项目处于 beta 阶段，建议先在内部测试、灰度环境和非核心业务中验证后再用于生产。
-
----
-
-## 功能特性
-
-- Android 端 Flutter Dart 代码热更新
-- 补丁冷启动生效，运行时无侵入
-- 自托管分发，不绑定第三方云服务
-- 内置安全校验、崩溃回滚与坏补丁黑名单
-- 提供打包 CLI、诊断能力和示例 App
+> The project is in beta. Validate it in internal testing, staged rollouts and non-critical paths before using it in production.
 
 ---
 
-## 目录
+## Features
 
-- [这个插件适合你吗？](#这个插件适合你吗)
-- [环境要求](#环境要求)
-- [5 分钟体验](#5-分钟体验)
-- [安装](#安装)
-- [快速开始](#快速开始)
-- [补丁生命周期](#补丁生命周期)
-- [崩溃保护](#崩溃保护)
-- [能改什么、不能改什么](#能改什么不能改什么)
-- [补丁发布检查清单](#补丁发布检查清单)
-- [安全](#安全)
-- [生产环境建议](#生产环境建议)
-- [常见问题](#常见问题)
-- [文档](#文档)
+- Hot updates for Flutter Dart code on Android
+- Patches take effect on cold start, no runtime intrusion
+- Self-hosted distribution; no third-party cloud lock-in
+- Built-in integrity verification, crash rollback, and a bad-patch blacklist
+- Ships with a packaging CLI, runtime diagnostics, and a sample app
 
 ---
 
-## 这个插件适合你吗？
+## Table of contents
 
-`flutter_patcher` 是一个自托管的 Android 端 Flutter 热更新 SDK。  
-补丁存放在你自己的服务器、CDN 或对象存储上，不依赖任何第三方云服务。
-
-### 适合的场景
-
-- 项目只需要 Android 热更新，iOS 可以接受正常发版
-- 团队可以自行搭建补丁分发服务，补丁数据需要自托管
-- 希望在小范围灰度中快速修复 Dart 层问题
-
-### 不适合的场景
-
-- 需要 Android + iOS 双端热更新
-- 不想维护任何补丁分发基础设施
-- 需要商业级 SLA、控制台、审计和专职支持
-- 需要更新 native 代码、Android 资源、assets 或 Flutter Engine
-- 应用商店或业务合规要求禁止动态下发可执行代码
-
-如果你需要 Android + iOS 双端热更新，或希望使用托管式服务，可以评估 Shorebird 等方案。
+- [Is this plugin a fit for you?](#is-this-plugin-a-fit-for-you)
+- [Requirements](#requirements)
+- [5-minute walkthrough](#5-minute-walkthrough)
+- [Install](#install)
+- [Quick start](#quick-start)
+- [Patch lifecycle](#patch-lifecycle)
+- [Crash protection](#crash-protection)
+- [What can and cannot be patched](#what-can-and-cannot-be-patched)
+- [Security](#security)
+- [Production recommendations](#production-recommendations)
+- [FAQ](#faq)
+- [Documentation](#documentation)
 
 ---
 
-## 环境要求
+## Is this plugin a fit for you?
 
-| 项目 | 要求 |
+`flutter_patcher` is a self-hosted Android-only hot-update SDK for Flutter.
+Patches live on your own server, CDN, or object storage; nothing depends on a third-party cloud.
+
+### Good fit
+
+- Your project only needs Android hot updates; iOS can ship through normal store releases
+- Your team can run its own patch distribution, and patch data must be self-hosted
+- You want to roll out Dart-layer fixes to a small audience quickly
+
+### Not a fit
+
+- You need hot updates on both Android and iOS
+- You don't want to maintain any patch-distribution infrastructure
+- You need a commercial SLA, hosted console, audit trails, or dedicated support
+- You need to update native code, Android resources, assets, or the Flutter Engine
+- App-store policy or regulatory rules forbid dynamic delivery of executable code
+
+If you need cross-platform hot updates or a managed service, evaluate alternatives such as Shorebird.
+
+---
+
+## Requirements
+
+| Item | Requirement |
 |---|---|
-| 平台 | Android only |
-| Dart SDK | `^3.10.7` |
-| Flutter | `>=3.3.0`；loader hook verified on 3.19 ~ 3.38 |
+| Platform | Android only |
+| Dart SDK | `>=3.0.0 <4.0.0` |
+| Flutter | `>=3.3.0`; loader hook verified on 3.19 ~ 3.38 |
 | Android `minSdk` | 24 |
 | Android `compileSdk` | 36 |
 | ABI | `armeabi-v7a` / `arm64-v8a` / `x86_64` |
@@ -77,13 +78,13 @@ Android 端 Flutter 热更新插件。
 | Kotlin | 2.2.20+ |
 | Java / JVM | 17 |
 
-在 iOS、macOS、Windows、Linux 和 Web 上，本库 API 可以被安全调用，但不会执行热更新逻辑，也不会抛出异常；首次调用时会打印一条“不支持当前平台”的日志。
+On iOS, macOS, Windows, Linux and Web, every API is safe to call but does nothing — the plugin logs a one-time "platform unsupported" warning and returns safe defaults.
 
 ---
 
-## 5 分钟体验
+## 5-minute walkthrough
 
-不需要服务器、CDN 或任何后端配置，克隆仓库即可体验完整热更新流程：
+You don't need any backend. Clone the repo and you can experience the full hot-update flow:
 
 ```bash
 git clone https://github.com/user/flutter_patcher.git
@@ -92,27 +93,28 @@ flutter build apk --release
 flutter install
 ```
 
-体验步骤：
+Steps:
 
-1. 打开 App，看到**蓝色**按钮
-2. 点击 **Apply patch**
-3. 从最近任务划掉并重新打开 App
-4. 按钮变成**红色**，表示补丁生效
-5. 点击 **Rollback**
-6. 再次重启后恢复蓝色
+1. Launch the app — the button is **blue**
+2. Tap **Apply patch**
+3. Swipe the app away from recents and reopen it
+4. The button is now **red** — the patch took effect
+5. Tap **Rollback**
+6. After another restart it is blue again
 
-Example 内置了一份预编译的红色主题补丁。  
-`Apply patch` 会读取 asset 字节并调用 `applyPatchBytes`，整个流程不走网络。
+The example bundles a precompiled red-theme patch.
+`Apply patch` reads the asset bytes and calls `applyPatchBytes`; the entire flow is offline.
 
 ---
 
-## 安装
+## Install
 
 ```yaml
 dependencies:
-  flutter_patcher: ^0.1.0
+  flutter_patcher: ^0.1.0+1
 ```
-或使用 Git 依赖：
+
+Or as a Git dependency:
 
 ```yaml
 dependencies:
@@ -123,11 +125,11 @@ dependencies:
 
 ---
 
-## 快速开始
+## Quick start
 
-### 1. 初始化
+### 1. Initialize
 
-在 `runApp()` 之前调用：
+Call before `runApp()`:
 
 ```dart
 void main() async {
@@ -139,9 +141,9 @@ void main() async {
 }
 ```
 
-大多数项目使用默认配置即可。
+The defaults are appropriate for most projects.
 
-如果需要调整崩溃保护参数，可以显式传入：
+If you need to tune crash protection, pass parameters explicitly:
 
 ```dart
 await FlutterPatcher.init(
@@ -150,9 +152,9 @@ await FlutterPatcher.init(
 );
 ```
 
-### 2. 应用补丁
+### 2. Apply a patch
 
-客户端只需要拿到一份 `PatchInfo`，然后调用 `applyPatch`。`PatchInfo` 通常由你自己的更新接口下发，由业务侧解析后构造：
+The client only needs a `PatchInfo`; pass it to `applyPatch`. `PatchInfo` is normally produced from your own update endpoint:
 
 ```dart
 final result = await FlutterPatcher.applyPatch(
@@ -165,15 +167,21 @@ final result = await FlutterPatcher.applyPatch(
 );
 
 if (result.ok) {
-  // 补丁需要冷启动后才生效，可弹窗引导用户
+  // The patch will take effect on the next cold start; show a restart hint if you want.
 }
 ```
 
-> 插件还提供一个可选的最小 check-update JSON 协议，主要用于快速接入、示例和本地联调。生产环境如果已有自己的更新、灰度或鉴权协议，建议直接解析业务响应并构造 `PatchInfo`。协议格式与 `checkUpdate` 用法见 [API 参考](https://pub.dev/documentation/flutter_patcher/latest/topics/API-reference-topic.html) 和 [架构设计](https://pub.dev/documentation/flutter_patcher/latest/topics/Architecture-topic.html)。
+> The plugin also ships with an optional minimal check-update JSON protocol, intended for quick onboarding, the example, and local testing. In production, if you already have your own update / staging / auth protocol, parse the response yourself and construct `PatchInfo` directly. The protocol format and `checkUpdate` usage live in the [API reference](https://pub.dev/documentation/flutter_patcher/latest/topics/API-reference-topic.html) and [Architecture](https://pub.dev/documentation/flutter_patcher/latest/topics/Architecture-topic.html).
 
-### 3. 从内存字节应用补丁
+> **Skipping MD5**: `PatchInfo.md5` is now optional. If your server doesn't ship md5 (or you only want HTTPS-level integrity), leave it out:
+> ```dart
+> PatchInfo(version: 'fix-1', patchUrl: '...', targetVersionCode: 100); // md5 defaults to ''
+> ```
+> Download integrity checks are skipped; **note that signature verification is also skipped** in this case (the Ed25519 input is the md5 hex string — without md5 there is no message to sign over). To keep signature verification you must also ship md5.
 
-如果你已有自己的下载逻辑，或者补丁来自 asset / isolate，可以使用 `applyPatchBytes`：
+### 3. Apply a patch from in-memory bytes
+
+If you already have your own download logic, or the patch comes from an asset / isolate, use `applyPatchBytes`:
 
 ```dart
 final bytes = await loadPatchFromYourSource();
@@ -185,29 +193,29 @@ final result = await FlutterPatcher.applyPatchBytes(
 );
 ```
 
-`applyPatchBytes` 会自动计算 MD5、处理临时文件，然后复用补丁应用流程。
+`applyPatchBytes` automatically computes the MD5, manages the temporary file, and reuses the regular apply flow.
 
-### 4. 构建补丁
+### 4. Build a patch
 
-每个补丁都必须绑定到一个基准 APK。  
-`--target-version-code` 用来声明该补丁适用于哪个已安装 APK 的 `versionCode`。
+Every patch is bound to a base APK.
+`--target-version-code` declares which installed APK `versionCode` the patch applies to.
 
-请注意：`--target-version-code` 不是补丁版本号，也不是补丁 APK 的版本号，而是用户设备上已安装的“基准 APK”的 `versionCode`。
+Note: `--target-version-code` is **not** the patch version, and not the patch APK's version — it's the `versionCode` of the base APK already installed on the user's device.
 
-例如，线上 APK 的 `versionCode` 是 `100`。现在你要为这个版本构建热修补丁 `1.0.0-h1`，则应填写：
+For example, if your live APK has `versionCode = 100` and you're building hotfix `1.0.0-h1` for that version:
 
 ```bash
-# 修改 Dart 代码后重新构建 release APK
+# Rebuild the release APK after editing Dart code
 flutter build apk --release
 
-# 从新 APK 中提取补丁，目标基准版本为 versionCode = 100
+# Extract the patch from the new APK; the base version is versionCode = 100
 dart run flutter_patcher:pack \
   --apk build/app/outputs/flutter-apk/app-release.apk \
   --version 1.0.0-h1 \
   --target-version-code 100
 ```
 
-产出：
+Output:
 
 ```text
 dist/
@@ -215,134 +223,134 @@ dist/
 └── manifest.json
 ```
 
-将 `libapp.so` 和 `manifest.json` 上传到你的 CDN 或对象存储即可。
+Upload `libapp.so` and `manifest.json` to your CDN or object storage.
 
-服务端协议、签名规范、自动初始化关闭等进阶配置见 [架构设计](https://pub.dev/documentation/flutter_patcher/latest/topics/Architecture-topic.html)。
+For the server protocol, signature workflow, disabling auto-init and other advanced configuration, see [Architecture](https://pub.dev/documentation/flutter_patcher/latest/topics/Architecture-topic.html).
 
-### 5. 回滚补丁
+### 5. Roll back
 
 ```dart
 await FlutterPatcher.rollback();
 ```
 
-回滚会删除当前补丁。下次冷启动时，应用会回到 APK 内置版本。
+Rollback deletes the current patch. On the next cold start the app falls back to the version baked into the APK.
 
-手动 `rollback()` 不会把补丁加入黑名单。
+A manual `rollback()` does **not** add the patch to the blacklist.
 
 ---
 
-## 补丁生命周期
+## Patch lifecycle
 
 ```text
-下载补丁
+Download patch
   ↓
-校验 MD5 / 签名 / versionCode
+Verify MD5 / signature when provided, then versionCode
   ↓
-写入本地补丁目录
+Persist to local patch directory
   ↓
-等待下次冷启动
+Wait for the next cold start
   ↓
-冷启动时加载补丁 libapp.so
+Cold start loads the patched libapp.so
   ↓
-启动成功：继续使用补丁
-启动失败：自动回滚
+Boot succeeds: keep using the patch
+Boot fails:    auto-rollback
 ```
 
-补丁应用成功后，会在**下次冷启动**生效，不会立即替换当前进程中的代码。
+A successful `applyPatch` takes effect on the **next cold start**, never inside the current process.
 
-如果需要引导用户重启，可以在 `applyPatch` 成功后弹窗提示。
+If you need to nudge users to restart, show a prompt after `applyPatch` succeeds.
 
 ---
 
-## 崩溃保护
+## Crash protection
 
-`flutter_patcher` 默认采用 fail-fast 策略。  
-当补丁导致启动失败，或首屏阶段出现严重 Dart 异常时，插件会在下次冷启动自动回滚到 APK 内置版本，并将问题补丁加入本地黑名单，尽量避免同一个坏补丁被反复加载。
+`flutter_patcher` is fail-fast by default.
+If a patch causes a boot failure, or a serious Dart-level error fires during early UI, the plugin rolls back to the APK's built-in version on the next cold start and adds the offending patch to a local blacklist, so the same bad patch is not loaded over and over.
 
-常用配置项：
+Common settings:
 
-| 参数 | 默认值 | 说明 |
+| Parameter | Default | Description |
 |---|---|---|
-| `maxCrashCount` | `1` | 连续失败多少次后熔断补丁 |
-| `verifyAfter` | `5 seconds` | 首帧后 Dart 错误钩子继续监听的窗口 |
+| `maxCrashCount` | `1` | Number of consecutive failures before the patch is tripped |
+| `verifyAfter` | `5 seconds` | Window during which the post-first-frame Dart error hooks keep watching |
 
-Android 11+ 可以通过 `ApplicationExitInfo` 更准确地区分崩溃、ANR、用户主动关闭和系统回收。  
-Android 10 及以下识别能力有限，建议结合线上崩溃监控和服务端下架策略。
+Android 11+ uses `ApplicationExitInfo` to distinguish crashes, ANRs, user dismissal, and system reclaim more accurately.
+Android 10 and below have weaker signals; pair the SDK with your own crash monitoring and a server-side kill switch.
 
-完整设计、Android 版本差异、黑名单和诊断状态见 [崩溃保护文档](https://pub.dev/documentation/flutter_patcher/latest/topics/Crash-protection-topic.html)。
-
----
-
-## 能改什么、不能改什么
-
-本插件只替换 Dart 编译产物 `libapp.so`。
-
-### 可以热更
-
-- `lib/` 下的 Dart 代码
-- Widget 和页面逻辑
-- 业务逻辑
-- 状态管理
-- 路由逻辑
-- 字符串常量
-- 纯 Dart 三方包升级，前提是 native 侧无变化
-
-### 不能热更
-
-以下变更必须走正常发版：
-
-- Kotlin / Java / C++ 等原生代码
-- AndroidManifest 变更
-- Android 资源文件
-- Flutter assets，例如图片、字体、JSON
-- Flutter Engine 升级
-- 新增或修改 native plugin
-
-### 需谨慎评估
-
-- 混淆配置变更：符号映射不一致可能导致崩溃栈不可读
-- 多 ABI / 多 flavor：服务端需按 `ABI × flavor × versionCode` 分发
-- 破坏性 Dart API 变更：回滚后持久化数据可能与旧代码不兼容
-- 数据库 schema 或本地缓存格式变更：需要保证新旧代码都能安全读取
+The full design, Android version differences, blacklist semantics, and diagnostic states live in the [Crash protection](https://pub.dev/documentation/flutter_patcher/latest/topics/Crash-protection-topic.html) doc.
 
 ---
 
-## 安全
+## What can and cannot be patched
 
-`flutter_patcher` 提供基础完整性校验和可选签名机制。
+The plugin only replaces the Dart compilation artifact `libapp.so`.
 
-- 每个补丁都会校验 MD5。
-- 可选 Ed25519 签名校验。
-- 私钥只应保存在服务端或构建环境中，不应进入客户端仓库。
-- 补丁与宿主 APK `versionCode` 强绑定，APK 升级后旧补丁自动失效。
-- 建议始终通过 HTTPS 下载补丁。
-- 建议服务端记录补丁版本、MD5、签名、目标 `versionCode` 和发布时间。
+### Hot-patchable
 
-签名生成、`strictSignature` 行为和服务端协议见 [架构设计](https://pub.dev/documentation/flutter_patcher/latest/topics/Architecture-topic.html)。
+- Dart code under `lib/`
+- Widgets and page logic
+- Business logic
+- State management
+- Routing
+- String constants
+- Pure-Dart third-party package upgrades, as long as the native side is unchanged
+
+### Not hot-patchable
+
+The following must go through a regular release:
+
+- Kotlin / Java / C++ or other native code
+- AndroidManifest changes
+- Android resources
+- Flutter assets (images, fonts, JSON, …)
+- Flutter Engine upgrades
+- Adding or modifying native plugins
+
+### Evaluate carefully
+
+- ProGuard / R8 changes: a mismatched symbol map can make crash stacks unreadable
+- Multi-ABI / multi-flavor: the server must distribute by `ABI × flavor × versionCode`
+- Breaking Dart API changes: persisted data may be incompatible with old code after rollback
+- Database schema or local cache format changes: both old and new code must read safely
 
 ---
 
-## 生产环境建议
+## Security
 
-### 1. 灰度发布
+`flutter_patcher` provides basic integrity checks plus an optional signature mechanism.
 
-不要直接 100% 下发补丁。建议逐步放量：
+- MD5 verification is strongly recommended; leave `PatchInfo.md5` empty only for quick testing or protocols that intentionally rely on HTTPS-level integrity
+- Optional Ed25519 signature verification; because the signed message is the md5 hex string, signatures are only checked when `md5` is present
+- Keep the private key on the server or build environment only — never in the client repo
+- A patch is strongly bound to the host APK's `versionCode`, so old patches expire after an APK upgrade
+- Always download patches over HTTPS
+- The server should record patch version, MD5/signature when used, target `versionCode`, and release time
+
+For signature generation, `strictSignature` behavior, and the server protocol, see [Architecture](https://pub.dev/documentation/flutter_patcher/latest/topics/Architecture-topic.html).
+
+---
+
+## Production recommendations
+
+### 1. Stage the rollout
+
+Don't ship a patch to 100% on day one. A typical ramp:
 
 ```text
 1% → 5% → 20% → 50% → 100%
 ```
 
-每个阶段观察 crash 率、启动失败率和关键业务指标。
+Watch crash rate, boot failure rate, and the key business metrics at each stage.
 
-### 2. 上报启动诊断
+### 2. Report boot diagnostics
 
-建议上报 `lastBootDiagnostic`：
+Report `lastBootDiagnostic`:
 
 ```dart
 final diag = await FlutterPatcher.lastBootDiagnostic;
 
 if (diag != null && !diag.isHealthy) {
-  // 替换为你自己的埋点 SDK：Firebase Analytics / Sentry / 自家上报等
+  // Replace with your analytics SDK: Firebase Analytics / Sentry / your own pipeline.
   analytics.report('patch_dropped', {
     'status': diag.status.name,
     'patch_version': diag.patchVersion,
@@ -352,42 +360,42 @@ if (diag != null && !diag.isHealthy) {
 }
 ```
 
-如果同一补丁短时间内多次触发 `droppedCircuitBreaker`，服务端应自动停止下发。
+If the same patch triggers `droppedCircuitBreaker` repeatedly in a short window, the server should automatically stop delivering it.
 
-### 3. 保留发布记录
+### 3. Keep release records
 
-建议为每个补丁记录：
+Track each patch with at least:
 
-- 补丁版本
-- 目标 APK `versionCode`
+- Patch version
+- Target APK `versionCode`
 - ABI
-- flavor
-- MD5
-- 签名
-- 发布时间
-- 灰度比例
-- 当前状态：灰度中、全量、已下架
+- Flavor
+- MD5, if shipped
+- Signature, if shipped
+- Release time
+- Rollout percentage
+- Current state: ramping, full, or rolled back
 
-### 4. 准备紧急下架
+### 4. Plan for emergency rollback
 
-紧急下架只需要从你的更新接口中停止下发该补丁版本。  
-已经触发崩溃保护的设备会在本地回滚，并拒绝再次应用同一份问题补丁。
+An emergency rollback only requires the update endpoint to stop returning the offending patch version.
+Devices that already tripped crash protection have rolled back locally and will refuse to apply the same problematic patch again.
 
 ---
 
-## 常见问题
+## FAQ
 
-### Q: 补丁和基准 APK 的 Flutter 版本必须一致吗？
+### Q: Must the patch and base APK use the same Flutter version?
 
-A: 是的。`libapp.so` 与 Flutter Engine / Dart 运行时深度绑定，不同 Flutter 版本的 Engine 无法安全加载对方的 `libapp.so`。如果升级了 Flutter SDK 或 Flutter Engine，必须重新发版。
+A: Yes. `libapp.so` is tightly coupled to the Flutter Engine and Dart runtime. Different Flutter versions cannot safely load each other's `libapp.so`. After upgrading the Flutter SDK or Engine, you must ship a new release.
 
-### Q: 用户跳过了中间版本的补丁，直接收到最新补丁会怎样？
+### Q: A user skipped intermediate patch versions and just got the latest one — what happens?
 
-A: 每个补丁都是完整的 `libapp.so`，不依赖之前的补丁。用户可以从无补丁或旧补丁直接跳到最新补丁。
+A: Each patch is a complete `libapp.so` and does not depend on previous patches. Users can jump straight from "no patch" or an old patch to the latest one.
 
-### Q: 开发期间怎么快速验证，不想每次上传 CDN？
+### Q: How do I iterate quickly during development without uploading to a CDN?
 
-A: 可以使用 `file://` scheme 读取设备本地路径，或者使用仓库自带的 mock server。注意 `mock_server.dart` 依赖 `example/` 的 `dev_dependencies: crypto`，必须在 `example/` 目录下运行：
+A: Use a `file://` URL pointing at a local device path, or use the bundled mock server. Note that `mock_server.dart` depends on the `crypto` `dev_dependency` declared in `example/`, and must be run from the `example/` directory:
 
 ```bash
 cd example
@@ -401,58 +409,60 @@ dart run flutter_patcher:pack \
 dart run tools/mock_server.dart dist 8080
 ```
 
-客户端 `patchUrl` 填：
+Set the client `patchUrl` to:
 
 ```text
-http://<你的电脑 IP>:8080/libapp.so
+http://<your-machine-ip>:8080/libapp.so
 ```
 
-### Q: 多个 ABI 怎么处理？
+### Q: How do I handle multiple ABIs?
 
-A: 服务端需按 ABI 分发不同的 `libapp.so`。客户端可通过 `FlutterPatcher.deviceAbi` 获取当前设备 ABI，并将其带入你自己的更新请求。
+A: The server must distribute a `libapp.so` per ABI. The client can read the current device ABI via `FlutterPatcher.deviceAbi` and include it in your update request.
 
-### Q: 多 flavor 怎么处理？
+### Q: How do I handle multiple flavors?
 
-A: 建议服务端按 `flavor × ABI × versionCode` 维度管理补丁。不同 flavor 的配置、包名、资源和业务逻辑可能不同，不建议混用补丁。
+A: The server should track patches by `flavor × ABI × versionCode`. Different flavors typically have different configs, package names, resources, and business logic — never share a patch across flavors.
 
-### Q: 需要修改 ProGuard / R8 配置吗？
+### Q: Do I need to tweak ProGuard / R8 rules?
 
-A: 通常不需要。插件的反射操作针对 Flutter Engine 的非混淆类，不受宿主业务混淆影响。
+A: Usually no. The plugin's reflection targets non-obfuscated Flutter Engine classes and is unaffected by your business obfuscation.
 
-### Q: 补丁能撤回吗？
+### Q: Can a patch be revoked?
 
-A: 可以。客户端侧调用 `FlutterPatcher.rollback()` 会删除当前补丁。服务端侧只要停止在更新接口中返回该版本补丁，新用户就不会继续下载。
+A: Yes. On the client, `FlutterPatcher.rollback()` deletes the current patch. On the server, simply stop returning that version from your update endpoint and new users will not download it.
 
-### Q: 补丁为什么不是立即生效？
+### Q: Why doesn't a patch take effect immediately?
 
-A: `libapp.so` 已经被当前进程加载后，无法安全地在运行时替换。为了保证稳定性，补丁会先落盘，并在下一次冷启动时加载。
+A: Once the current process has loaded `libapp.so`, it can't be safely swapped at runtime. To stay safe, the patch is written to disk and loaded on the next cold start.
 
-### Q: 为什么要绑定 `targetVersionCode`？
+### Q: Why does each patch need a `targetVersionCode`?
 
-A: 补丁只适用于构建它时对应的基准 APK。绑定 `targetVersionCode` 可以避免 APK 升级后继续加载旧补丁，也可以避免服务端误把补丁下发给不兼容版本。
-
----
-
-## 文档
-
-- [API 参考](https://pub.dev/documentation/flutter_patcher/latest/topics/API-reference-topic.html) — 初始化、检查更新、应用补丁、回滚、诊断、错误码和 CLI 参数
-- [崩溃保护文档](https://pub.dev/documentation/flutter_patcher/latest/topics/Crash-protection-topic.html) — 崩溃保护、自动回滚、黑名单、Android 版本差异和诊断状态
-- [架构设计](https://pub.dev/documentation/flutter_patcher/latest/topics/Architecture-topic.html) — 工作原理、自托管服务端协议、签名和进阶配置
+A: A patch is only valid against the base APK it was built for. Binding `targetVersionCode` prevents loading old patches after an APK upgrade and prevents the server from accidentally shipping a patch to incompatible builds.
 
 ---
 
-## 贡献
+## Documentation
 
-欢迎 issue 和 PR。
+- [API reference](https://pub.dev/documentation/flutter_patcher/latest/topics/API-reference-topic.html) — init, check-update, apply, rollback, diagnostics, error codes, and CLI flags
+- [Crash protection](https://pub.dev/documentation/flutter_patcher/latest/topics/Crash-protection-topic.html) — crash protection, auto-rollback, blacklist, Android version differences, and diagnostic states
+- [Architecture](https://pub.dev/documentation/flutter_patcher/latest/topics/Architecture-topic.html) — internals, self-hosted server protocol, signing, and advanced configuration
 
-提交前请确保：
-
-- `flutter analyze` 无 warning
-- `flutter test` 全部通过
-- 如涉及原生代码变更，在真机上跑过完整的补丁加载和回滚流程
+中文文档：[README-zh.md](README-zh.md) · [doc/api-reference-zh.md](doc/api-reference-zh.md) · [doc/architecture-zh.md](doc/architecture-zh.md) · [doc/crash-protection-zh.md](doc/crash-protection-zh.md)
 
 ---
 
-## 许可证
+## Contributing
+
+Issues and PRs are welcome.
+
+Before submitting, please make sure:
+
+- `flutter analyze` reports no warnings
+- `flutter test` is fully green
+- If you touched native code, you have run a real-device end-to-end patch / rollback flow
+
+---
+
+## License
 
 MIT

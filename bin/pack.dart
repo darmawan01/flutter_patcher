@@ -30,8 +30,7 @@ Future<int> main(List<String> argv) async {
     )
     ..addOption(
       'target-version-code',
-      help:
-          'Host APK versionCode the patch is built for (integer). '
+      help: 'Host APK versionCode the patch is built for (integer). '
           'Runtime will reject the patch if it doesn\'t match.',
     )
     ..addOption(
@@ -104,7 +103,7 @@ Future<int> main(List<String> argv) async {
   }
   final abi = chosen.$1;
   final entry = chosen.$2;
-  final soBytes = entry.content as List<int>;
+  final soBytes = _archiveFileBytes(entry);
   stdout.writeln(
     '[pack] extracted lib/$abi/libapp.so (${_fmtBytes(soBytes.length)})',
   );
@@ -166,4 +165,13 @@ String _fmtBytes(int n) {
   if (n < 1024) return '$n B';
   if (n < 1024 * 1024) return '${(n / 1024).toStringAsFixed(1)} KB';
   return '${(n / 1024 / 1024).toStringAsFixed(2)} MB';
+}
+
+List<int> _archiveFileBytes(ArchiveFile file) {
+  final dynamic dynamicFile = file;
+  try {
+    return dynamicFile.readBytes() as List<int>;
+  } on NoSuchMethodError {
+    return dynamicFile.content as List<int>;
+  }
 }
