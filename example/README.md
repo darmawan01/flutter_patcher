@@ -17,20 +17,19 @@ Tap **Rollback** and cold-start again to return to the APK-bundled `libapp.so`.
 
 ## Mock server
 
-The repository also includes a small HTTP mock server for testing
-`checkUpdate -> applyPatch`. The script depends on `crypto` from this
-example's `dev_dependencies`, so it must be run from inside `example/`:
+The package includes a formal local mock server CLI for testing
+`checkUpdate -> applyPatch` from your own app, without depending on this
+example directory:
 
 ```bash
-cd example
-flutter pub get        # installs example dev_dependencies (incl. crypto)
-
 dart run flutter_patcher:pack \
   --apk path/to/app-release.apk \
   --version dev-1 \
   --target-version-code 1
 
-dart run tools/mock_server.dart dist 8080
+dart run flutter_patcher:mock_server --dist dist
 ```
 
-The mock server reads `dist/libapp.so`, matching the pack CLI output.
+The mock server reads `dist/libapp.so` and `dist/manifest.json`, then exposes
+`GET /check` and `GET /libapp.so` on `0.0.0.0:8080` so a phone on the same
+Wi-Fi can access it.

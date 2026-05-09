@@ -1,5 +1,20 @@
 > Chinese version: [CHANGELOG-zh.md](CHANGELOG-zh.md)
 
+## 0.1.2
+
+### Added
+
+- Added `dart run flutter_patcher:mock_server` for local
+  `checkUpdate -> applyPatch` testing without maintaining an example-only
+  helper script.
+
+### Changed
+
+- Improved README onboarding with a TL;DR, clearer fit / non-fit guidance,
+  store policy warning, and local mock server instructions.
+- Updated pub.dev package description and topics for better discoverability.
+- Added a GitHub social preview image under `doc/social-preview.png`.
+
 ## 0.1.1+1
 
 ### Fixed

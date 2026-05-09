@@ -343,9 +343,13 @@ This makes incident triage much easier.
 
 ### Local mock server
 
-The repository ships `example/tools/mock_server.dart` for local end-to-end testing.
+The repository ships `dart run flutter_patcher:mock_server` for local end-to-end testing.
 
-It depends on the `crypto` `dev_dependency` declared in `example/pubspec.yaml`, so it must be run inside the `example/` workspace (`cd example && flutter pub get` first). It is never bundled into a release APK and should never be used in production.
+It serves a local `libapp.so` and `manifest.json` over HTTP for development only. It is never bundled into a release APK and should never be used in production.
+
+```bash
+dart run flutter_patcher:mock_server --dist dist
+```
 
 A typical workflow is to validate the full flow against the mock server, then plug your own backend in.
 

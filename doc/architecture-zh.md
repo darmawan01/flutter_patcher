@@ -346,9 +346,13 @@ PatchInfo(version: 'fix-1', patchUrl: 'https://...', targetVersionCode: 100);
 
 ### 本地 mock server
 
-仓库中的 `example/tools/mock_server.dart` 提供了一个本地 mock server，可用于开发联调。
+仓库中的 `dart run flutter_patcher:mock_server` 提供了一个本地 mock server，可用于开发联调。
 
-它依赖 `example/pubspec.yaml` 中 `dev_dependencies` 的 `crypto`，因此只能在 `example/` 工作区内运行（先 `cd example && flutter pub get`），不会被打包进 release apk，也不应在生产中使用。
+它会通过 HTTP 暴露本地 `libapp.so` 和 `manifest.json`，仅用于开发环境，不会被打包进 release apk，也不应在生产中使用。
+
+```bash
+dart run flutter_patcher:mock_server --dist dist
+```
 
 你可以先用 mock server 跑通完整流程，再接入自己的服务端。
 

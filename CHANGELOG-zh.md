@@ -1,3 +1,17 @@
+## 0.1.2
+
+### Added
+
+- 新增 `dart run flutter_patcher:mock_server`，用于本地测试
+  `checkUpdate -> applyPatch` 流程，不再依赖 example-only 的辅助脚本。
+
+### Changed
+
+- 改进 README 顶部信息结构，新增 TL;DR、适合 / 不适合场景、商店政策提示
+  和本地 mock server 说明。
+- 更新 pub.dev package description 和 topics，提升搜索与展示效果。
+- 新增 GitHub social preview 图片：`doc/social-preview.png`。
+
 ## 0.1.1+1
 
 ### Fixed

@@ -3,13 +3,33 @@
 **English** | [简体中文](README-zh.md)
 
 [![Platform](https://img.shields.io/badge/platform-Android_only-brightgreen)](https://flutter.dev)
+[![pub package](https://img.shields.io/pub/v/flutter_patcher.svg)](https://pub.dev/packages/flutter_patcher)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Status](https://img.shields.io/badge/status-beta-orange)]()
 
-Hot-update plugin for Flutter on Android.
-By delivering a `libapp.so` patch, your Dart code changes take effect on the next cold start, and the plugin automatically rolls back if a patch fails to boot.
+Pub package: [flutter_patcher on pub.dev](https://pub.dev/packages/flutter_patcher)
+
+## TL;DR
+
+flutter_patcher is an Android-only, self-hosted Flutter hot-update plugin.
+
+It replaces Flutter's Dart AOT artifact `libapp.so` on the next cold start, with:
+
+- self-hosted patch distribution
+- versionCode binding
+- MD5 / optional Ed25519 verification
+- crash rollback and bad-patch blacklist
+- offline 5-minute demo
+
+Best for: teams that need controlled Android hotfixes and can manage their own patch endpoint/CDN.
+
+Not for: iOS, native code/resources/assets changes, Flutter Engine changes, or apps whose store policy forbids dynamic executable code.
+
+> Store policy warning: Google Play and some app stores may restrict downloading executable code such as `.so` files. Use this package only after checking the policy of your distribution channel. It is more suitable for self-controlled distribution, enterprise/internal apps, or channels where this behavior is explicitly allowed.
 
 > The project is in beta. Validate it in internal testing, staged rollouts and non-critical paths before using it in production.
+
+If this project helps your Flutter release workflow, please star it — it helps more developers discover it.
 
 ---
 
@@ -28,6 +48,7 @@ By delivering a `libapp.so` patch, your Dart code changes take effect on the nex
 - [Is this plugin a fit for you?](#is-this-plugin-a-fit-for-you)
 - [Requirements](#requirements)
 - [5-minute walkthrough](#5-minute-walkthrough)
+- [Local mock server](#local-mock-server)
 - [Install](#install)
 - [Quick start](#quick-start)
 - [Patch lifecycle](#patch-lifecycle)
@@ -87,7 +108,7 @@ On iOS, macOS, Windows, Linux and Web, every API is safe to call but does nothin
 You don't need any backend. Clone the repo and you can experience the full hot-update flow:
 
 ```bash
-git clone https://github.com/user/flutter_patcher.git
+git clone https://github.com/xuelinger2333/flutter_patcher.git
 cd flutter_patcher/example
 flutter build apk --release
 flutter install
@@ -107,11 +128,53 @@ The example bundles a precompiled red-theme patch.
 
 ---
 
+## Local mock server
+
+If you want to try the HTTP `checkUpdate -> applyPatch` flow without building a backend, run the bundled mock server.
+It is for local development only, not production patch distribution.
+
+```bash
+# Rebuild the release APK after editing Dart code
+flutter build apk --release
+
+# Extract libapp.so and manifest.json
+dart run flutter_patcher:pack \
+  --apk build/app/outputs/flutter-apk/app-release.apk \
+  --version dev-1 \
+  --target-version-code 100
+
+# Serve dist/libapp.so and dist/manifest.json on 0.0.0.0:8080
+dart run flutter_patcher:mock_server --dist dist
+```
+
+Then call it from a phone on the same Wi-Fi network:
+
+```dart
+final check = await FlutterPatcher.checkUpdate(
+  'http://<your-computer-ip>:8080/check',
+);
+
+if (check.hasUpdate) {
+  await FlutterPatcher.applyPatch(check.patch!);
+}
+```
+
+You can also point at a specific patch file:
+
+```bash
+dart run flutter_patcher:mock_server \
+  --patch dist/libapp.so \
+  --manifest dist/manifest.json \
+  --port 8080
+```
+
+---
+
 ## Install
 
 ```yaml
 dependencies:
-  flutter_patcher: ^0.1.1
+  flutter_patcher: ^0.1.2
 ```
 
 Or as a Git dependency:
@@ -120,7 +183,7 @@ Or as a Git dependency:
 dependencies:
   flutter_patcher:
     git:
-      url: https://github.com/user/flutter_patcher.git
+      url: https://github.com/xuelinger2333/flutter_patcher.git
 ```
 
 ---
@@ -395,18 +458,15 @@ A: Each patch is a complete `libapp.so` and does not depend on previous patches.
 
 ### Q: How do I iterate quickly during development without uploading to a CDN?
 
-A: Use a `file://` URL pointing at a local device path, or use the bundled mock server. Note that `mock_server.dart` depends on the `crypto` `dev_dependency` declared in `example/`, and must be run from the `example/` directory:
+A: Use a `file://` URL pointing at a local device path, or run the bundled mock server CLI:
 
 ```bash
-cd example
-flutter pub get
-
 dart run flutter_patcher:pack \
   --apk path/to/app-release.apk \
   --version dev-1 \
   --target-version-code 1
 
-dart run tools/mock_server.dart dist 8080
+dart run flutter_patcher:mock_server --dist dist --port 8080
 ```
 
 Set the client `patchUrl` to:

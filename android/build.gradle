@@ -24,6 +24,14 @@ allprojects {
 apply plugin: "com.android.library"
 apply plugin: "kotlin-android"
 
+tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
+    // Kotlin incremental cache path relativization can fail on Windows when a
+    // Flutter plugin is compiled from Pub Cache on C: into an app on another
+    // drive. Keep this library compile non-incremental; app modules are
+    // unaffected.
+    incremental = false
+}
+
 android {
     namespace = "com.flutter_patcher.flutter_patcher"
 

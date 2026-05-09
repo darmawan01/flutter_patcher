@@ -1,17 +1,17 @@
 name: flutter_patcher
-description: Android libapp.so hotfix plugin with circuit breaker and Ed25519 signature verification.
-version: 0.1.1+1
+description: Self-hosted Flutter Android hot-update/code-push plugin that patches libapp.so on cold start with integrity checks and crash rollback.
+version: 0.1.2
 homepage: https://github.com/xuelinger2333/flutter_patcher
 repository: https://github.com/xuelinger2333/flutter_patcher
 issue_tracker: https://github.com/xuelinger2333/flutter_patcher/issues
 documentation: https://github.com/xuelinger2333/flutter_patcher#readme
 
 topics:
-  - hotfix
-  - patch
+  - flutter
   - android
-  - native-plugin
-  - signature-verification
+  - hot-update
+  - code-push
+  - app-update
 
 environment:
   sdk: '>=3.0.0 <4.0.0'

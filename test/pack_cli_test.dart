@@ -20,7 +20,7 @@ void main() {
     final soBytes = utf8.encode('fake libapp.so bytes');
     final archive = Archive()
       ..addFile(ArchiveFile('lib/arm64-v8a/libapp.so', soBytes.length, soBytes));
-    await apk.writeAsBytes(ZipEncoder().encode(archive)!);
+    await apk.writeAsBytes(ZipEncoder().encode(archive));
 
     final outDir = Directory('${temp.path}/dist');
     final exitCode = await pack.main([
