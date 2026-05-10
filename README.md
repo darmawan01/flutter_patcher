@@ -19,7 +19,6 @@ It replaces Flutter's Dart AOT artifact `libapp.so` on the next cold start, with
 - versionCode binding
 - MD5 / optional Ed25519 verification
 - crash rollback and bad-patch blacklist
-- offline 5-minute demo
 
 Best for: teams that need controlled Android hotfixes and can manage their own patch endpoint/CDN.
 
@@ -35,11 +34,17 @@ If this project helps your Flutter release workflow, please star it — it helps
 
 ## Features
 
-- Hot updates for Flutter Dart code on Android
-- Patches take effect on cold start, no runtime intrusion
+- Hot updates for Dart code compiled into Android `libapp.so`
+- Patches take effect on the next cold start; no in-process code swapping
 - Self-hosted distribution; no third-party cloud lock-in
 - Built-in integrity verification, crash rollback, and a bad-patch blacklist
-- Ships with a packaging CLI, runtime diagnostics, and a sample app
+- Includes a packaging CLI, runtime diagnostics, local mock server, and sample app
+
+---
+
+## Feature Demo
+
+![Feature demo: apply a patch, cold restart, and rollback](doc/feature-presentation.gif)
 
 ---
 
@@ -383,7 +388,8 @@ The following must go through a regular release:
 `flutter_patcher` provides basic integrity checks plus an optional signature mechanism.
 
 - MD5 verification is strongly recommended; leave `PatchInfo.md5` empty only for quick testing or protocols that intentionally rely on HTTPS-level integrity
-- Optional Ed25519 signature verification; because the signed message is the md5 hex string, signatures are only checked when `md5` is present
+- Optional Ed25519 signature verification is available on Android 13 / API 33+. On lower Android versions, signed patches are rejected by default (`strictSignature: true`); use `strictSignature: false` only if you accept the MD5 + HTTPS fallback
+- Because the signed message is the md5 hex string, signatures are only checked when `md5` is present
 - Keep the private key on the server or build environment only — never in the client repo
 - A patch is strongly bound to the host APK's `versionCode`, so old patches expire after an APK upgrade
 - Always download patches over HTTPS
@@ -458,7 +464,7 @@ A: Each patch is a complete `libapp.so` and does not depend on previous patches.
 
 ### Q: How do I iterate quickly during development without uploading to a CDN?
 
-A: Use a `file://` URL pointing at a local device path, or run the bundled mock server CLI:
+A: For the offline flow, run the sample app from the [5-minute walkthrough](#5-minute-walkthrough). For HTTP testing, use the bundled mock server from [Local mock server](#local-mock-server):
 
 ```bash
 dart run flutter_patcher:pack \
@@ -469,7 +475,7 @@ dart run flutter_patcher:pack \
 dart run flutter_patcher:mock_server --dist dist --port 8080
 ```
 
-Set the client `patchUrl` to:
+Then set the client `patchUrl` to:
 
 ```text
 http://<your-machine-ip>:8080/libapp.so
