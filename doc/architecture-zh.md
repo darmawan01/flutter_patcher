@@ -39,7 +39,7 @@
                                                        失败 → 自动回滚
 ```
 
-载荷既可以是裸 `libapp.so`（legacy 纯代码），也可以是 v2 `patch.zip`（同时携带 `libapp.so` 与 Flutter 资源覆盖）—— 由 `manifest.json` 的 `payload` 字段声明，插件自动识别并分发。补丁不会在当前进程内立即替换代码，下次冷启动时才生效。
+自 0.1.3 起，producer 永远输出 `patch.zip`（纯 Dart 的补丁就是一个没有 `assets` 块的 `patch.zip`）。设备端为了兼容 0.1.0–0.1.2 时代发出去的裸 `libapp.so` 仍保留一条静默的 legacy 路径，但新补丁应统一为 `patch.zip`。补丁不会在当前进程内立即替换代码，下次冷启动时才生效。
 
 ---
 
@@ -48,23 +48,32 @@
 用户设备上，补丁会经历以下生命周期：
 
 ```text
-下载载荷（libapp.so 或 patch.zip）
+applyPatch（安装阶段）
   ↓
-解析 meta → 校验 versionCode → 校验有效 MD5 → 校验签名（如下发）
+下载 patch.zip → 校验整包 MD5 + 签名
   ↓
-原子落盘：staging/ → pending/ → 切换为 current/
+解压 lib/<abi>/libapp.so 到 staging；如果带资源，再
+  拷贝 APK 的 flutter_assets/ → 逐 path overlay → 合并资源表
+  → 把结果打成私有 flutter_assets.apk
   ↓
-等待下次冷启动
+原子提交：把 staging 的产物 rename 进 current/
   ↓
-冷启动加载补丁 libapp.so（如带资源则同时使用合并后的 AssetManifest.bin）
+…等待下次冷启动…
+  ↓
+冷启动：校验 current/（versionCode + 磁盘上 libapp.so 的 MD5）
+  ↓
+LoaderHook 把 Flutter 指向补丁 libapp.so
+  （若有资源，再指向 flutter_assets.apk）
   ↓
 启动成功：继续使用补丁
-启动失败：自动回滚
+启动失败：下次冷启动自动回滚
 ```
 
-校验顺序（见 [PatchManager.kt:169-290](../android/src/main/kotlin/com/flutter_patcher/flutter_patcher/PatchManager.kt#L169-L290)）：meta 解析 → `versionCode` 匹配 → effective MD5 → Ed25519 签名。签名只在 `md5` 存在时才校验（签名的明文就是 md5 十六进制串）。
+重活（完整性校验、资源 overlay 合成、资源表合并、私有归档打包）都发生在 `applyPatch` 内部，并且在调用返回前已经原子提交到 `current/`。冷启动只重新校验磁盘上的产物并装好 loader hook，**不会**重新打开 ZIP 或重跑 overlay 合并。
 
-冷启动时，插件会先检查补丁是否仍然适用于当前 APK，再进行加载。  
+安装阶段的校验顺序（见 [PatchManager.kt:303-446](../android/src/main/kotlin/com/flutter_patcher/flutter_patcher/PatchManager.kt#L303-L446)）：整包 MD5 → Ed25519 签名 → `versionCode` 匹配（对照内层 package manifest）→ ZIP 内逐文件完整性。签名只在 `md5` 存在时才校验（签名的明文就是 md5 十六进制串）。
+
+冷启动时，插件会重新校验磁盘上的产物是否仍属于当前 APK（`versionCode` 与存储的 MD5），再进行加载。
 如果补丁无效、损坏、版本不匹配，或命中本地黑名单，插件会丢弃该补丁并回到 APK 内置版本。
 
 崩溃保护的完整判定流程、Android 版本差异和黑名单行为见 [Crash protection](crash-protection-zh.md)。
@@ -112,47 +121,54 @@ dart run flutter_patcher:pack \
 
 ### 载荷 v2（`patch.zip`）
 
-自 0.1.3 起，`PatchInfo.patchUrl` 既可以指向裸 `libapp.so`（legacy，`schemaVersion: 1`），也可以指向 v2 `patch.zip`（`schemaVersion: 2`）。外层 `manifest.json` 通过 `payload` 字段声明类型，插件自动识别并分发。
+0.1.3+ 的 `pack` CLI 恒定输出 `patch.zip`（`schemaVersion: 2`）。0.1.0–0.1.2 时代构建的裸 `libapp.so` 仍能被设备端兼容加载，但已没有任何 producer 会再生成它 —— 新补丁请假定一律是 `patch.zip`。
 
 `patch.zip` 内部结构：
 
 ```text
-manifest.json          # schemaVersion 2；libapp.so 与每个覆盖文件的逐文件 MD5
-manifest_patch.json    # AssetManifest.bin 差量（operations: 按 key 进行 upsert）
+manifest.json          # schemaVersion 2；lib 映射 + 可选 assets 块
+manifest_patch.json    # 资源表差量操作（只有打了资源时才存在）
 lib/<abi>/libapp.so    # 补丁后的 Dart 代码（总是存在）
-assets/<asset-key>     # 每个 key 一条（含分辨率变体）
+assets/<asset-path>    # 每个 path 一条（含分辨率变体）
 ```
 
-运行时把 ZIP 解到私有目录，校验逐文件 MD5，把 `manifest_patch.json` 合并进基准 `AssetManifest.bin`，再写入补丁的私有资源目录。完整 schema 与校验规则见 [API 参考 → 资源补丁](api-reference-zh.md#资源补丁)。
+纯 Dart 的 `patch.zip` 只包含内层 `manifest.json` 与 `lib/<abi>/libapp.so`；运行时检测到没有 `assets` 块就完全跳过资源合成。完整 schema 与校验规则见 [API 参考 → 资源补丁](api-reference-zh.md#资源补丁)。
 
 ---
 
 ### 原子安装
 
-补丁安装是崩溃安全的。落盘状态机（见 [PatchManager.kt:622-767](../android/src/main/kotlin/com/flutter_patcher/flutter_patcher/PatchManager.kt#L622-L767)）：
+补丁安装是崩溃安全的。安装路径（[PatchManager.kt:482-615](../android/src/main/kotlin/com/flutter_patcher/flutter_patcher/PatchManager.kt#L482-L615)，`finalizePatch` 在 [L622-767](../android/src/main/kotlin/com/flutter_patcher/flutter_patcher/PatchManager.kt#L622-L767)）先把所有产物写到副本目录，再用一连串 rename 提交：
 
 ```text
-staging/   ← 下载并校验
-   ↓ rename
-pending/   ← 已提升，下次冷启动加载这一份
-   ↓ 首次启动成功后
-current/   ← 激活；上一份（如有）位于 previous/
-   ↓ 下一次安装时
-previous/  ← 异步回收
+staging/      ← 解压 libapp.so；合成 flutter_assets/ + flutter_assets.apk
+   ↓ 按产物各 rename 一次（so / meta / 资源目录 / 资源 apk）
+pending/      ← 短命中间态，仅在 finalizePatch 内部存在
+   ↓ rename（真正的提交）— 提交前先放下 install marker
+current/      ← 下次冷启动加载的就是这个；上一份移到 previous/
+   ↓ finalizePatch 末尾
+previous/     ← 在同一次提交中被清理
 ```
 
-掉电或进程被杀可能留下半安装目录；下次启动时 `recoverInterruptedInstall`（[PatchManager.kt:1146-1172](../android/src/main/kotlin/com/flutter_patcher/flutter_patcher/PatchManager.kt#L1146-L1172)）会自动协调：要么续装，要么丢弃。
+`pending/` **不是**"等首次启动成功"的中间态 —— 它只是 `finalizePatch` 里 rename 的临时目标。`applyPatch` 调用一旦成功返回，`current/` 就已经提升完成，`previous/` 也已清理。"首次启动成功"那道门槛是 **崩溃熔断**（见 [Crash protection](crash-protection-zh.md)）—— 上一次启动触发熔断时，下次启动会删除 `current/`；这是独立于落盘事务的另一套机制。
+
+掉电或进程被杀可能留下 `pending/` 或 `previous/` 以及一个 install marker；下次启动 `recoverInterruptedInstall`（[PatchManager.kt:1146-1172](../android/src/main/kotlin/com/flutter_patcher/flutter_patcher/PatchManager.kt#L1146-L1172)）会自动协调：要么回滚到 `previous/`，要么丢弃半装态。
 
 ---
 
-### AssetManifest.bin 合并
+### 资源 overlay 合成（安装阶段）
 
-补丁带资源覆盖时，插件需要在不重打 APK 的前提下让 Flutter 知道新字节的位置。流程：
+补丁带资源覆盖时，插件会在安装阶段产出一份自包含、可被 Flutter 直接读取的资源 bundle。流程（[PatchManager.kt:482-615](../android/src/main/kotlin/com/flutter_patcher/flutter_patcher/PatchManager.kt#L482-L615)、[L848-983](../android/src/main/kotlin/com/flutter_patcher/flutter_patcher/PatchManager.kt#L848-L983)）：
 
-1. 用 `StandardMessageCodec` 解码 APK 内的基准 `AssetManifest.bin`（[PatchManager.kt:901-983](../android/src/main/kotlin/com/flutter_patcher/flutter_patcher/PatchManager.kt#L901-L983)）。
-2. 应用 `manifest_patch.json` 里的每条 `upsert`（按 key 替换或插入 variants 列表）。
-3. 重新编码并写入补丁的私有资源目录。
-4. 启动时 [`LoaderHook`](../android/src/main/kotlin/com/flutter_patcher/flutter_patcher/LoaderHook.kt) 安装自定义 `FlutterLoader` + `FlutterJNI` AssetManager，把 Flutter 的资源读取重定向到补丁目录；未被补丁覆盖的 key 仍走 APK 内的 fallback。
+1. 把基准 APK 的 `assets/flutter_assets/*` 拷到 staging 目录。
+2. 按内层 manifest 列出的 path，逐条用 `patch.zip` 里的字节覆盖。
+3. 用 `StandardMessageCodec` 解码基准资源表，应用 `manifest_patch.json` 的每条 `upsert`（替换或插入 variants 列表），再重新编码。
+4. 对照内层 manifest 校验逐文件 MD5。
+5. 把 staging 目录树重新打成一个私有 `flutter_assets.apk`，与补丁 `libapp.so` 同目录存放。
+
+冷启动不做以上任何一步。它只遍历 `current/`，确认 `libapp.so` + `flutter_assets.apk`（若存在）仍与存储的 MD5 一致，然后交给 loader hook：
+
+[`LoaderHook`](../android/src/main/kotlin/com/flutter_patcher/flutter_patcher/LoaderHook.kt) 劫持 `FlutterLoader.findAppBundlePath` 指向补丁 `libapp.so`，并在带资源时安装 patched `FlutterJNI` AssetManager 打开私有 `flutter_assets.apk`。未被补丁覆盖的 path 仍走 APK fallback。
 
 `Image.asset(...)`、`rootBundle.load(...)` 以及字体查找都会自动走重定向后的 bundle —— 业务代码无需改动。
 
@@ -168,8 +184,8 @@ previous/  ← 异步回收
 
 `libapp.so` 不跨 ABI 通用。pack CLI 的 `--abi` 控制补丁里携带哪一个：
 
-* legacy 裸 `.so` 载荷每包一个 ABI；服务端按 `deviceAbi` 选 URL。
-* v2 `patch.zip` 也只携带 **一个** `lib/<abi>/libapp.so`。插件按 `Build.SUPPORTED_ABIS` 的优先级读取，并接受第一个匹配项；不匹配时返回 `unsupportedAbi`。
+* `patch.zip` 只携带 **一个** `lib/<abi>/libapp.so`。插件按 `Build.SUPPORTED_ABIS` 的优先级读取，并接受第一个匹配项；不匹配时返回 `unsupportedAbi`。
+* （Legacy：0.1.0–0.1.2 时代的裸 `.so` 载荷每包一个 ABI，服务端按 `deviceAbi` 选 URL。设备端兼容路径仍接受这种格式。）
 
 设备端不做 ABI 之间的自动 fallback —— 选择正确的 artifact 是服务端的责任。
 

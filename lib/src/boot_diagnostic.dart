@@ -23,10 +23,11 @@ enum PatchBootStatus {
   /// Cold-start signature validation failed.
   droppedSignatureInvalid,
 
-  /// Metadata or required patch artifacts are missing or corrupt.
+  /// Metadata or required patch artifacts are missing or corrupt on disk.
   ///
-  /// For asset patches this can include missing `flutter_assets/`,
-  /// `AssetManifest.bin`, or `flutter_assets.apk`.
+  /// For asset patches, the on-disk asset bundle the install step produced
+  /// is missing or unreadable — typically caused by the patch directory
+  /// being partially wiped between install and boot.
   droppedMetaCorrupted,
 
   /// Crash protection tripped after consecutive early boot failures.

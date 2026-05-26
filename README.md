@@ -117,15 +117,14 @@ flutter install
 
 Steps:
 
-1. Launch the app — the button is **blue**
+1. Launch the app — it shows the **original** `assets/patch_demo.png`
 2. Tap **Apply patch**
 3. Swipe the app away from recents and reopen it
-4. The button is now **red** — the patch took effect
+4. The image has changed — the asset overlay took effect
 5. Tap **Rollback**
-6. After another restart it is blue again
+6. After another restart the original image is back
 
-The example bundles a precompiled red-theme patch.
-`Apply patch` reads the asset bytes and calls `applyPatchBytes`; the entire flow is offline.
+The example bundles a precompiled `patch.zip` that swaps `assets/patch_demo.png`. `Apply patch` reads the bundled bytes and calls `applyPatchBytes`; nothing leaves the device.
 
 ---
 
@@ -207,17 +206,15 @@ dart run flutter_patcher:pack \
 
 - `--version`: patch version (any string you choose).
 - `--target-version-code`: `versionCode` of the **base APK installed on the user's device** — not the patch version, not the patch APK's version.
-- `--assets`: comma-separated asset keys. Omit for Dart-only patches.
+- `--assets`: paths of asset files to include. Each path must already be declared under `assets:` in the new APK's `pubspec.yaml`; `--assets` only tells `pack` *which* of those assets to ship inside `patch.zip`. Omit for Dart-only patches.
 
-When you have many keys, point `--assets` at a text file with `@` — one key per line, `#` starts a comment, inline and `@file` can be mixed:
+For long lists, point `--assets` at a text file with `@` — one path per line, `#` starts a comment, inline and `@file` can be mixed:
 
 ```bash
 # patch-assets.txt
-# core
 assets/hero.png
 assets/strings/zh.json
-# fonts
-assets/fonts/Inter-Bold.ttf
+assets/illustrations/onboarding-1.png
 ```
 
 ```bash
@@ -228,9 +225,9 @@ dart run flutter_patcher:pack \
   --assets @patch-assets.txt,assets/last-minute.png
 ```
 
-Output: `dist/patch.zip` + `dist/manifest.json`. Upload both to your CDN.
+Output: `dist/patch.zip` (the payload) + `dist/manifest.json` (a sidecar that tells *your* backend the patch version, MD5, target `versionCode`, and that `patch.zip` is the file to serve). Ship `patch.zip` from your CDN; have your update endpoint hand the client a `PatchInfo` whose `patchUrl` points at it.
 
-`patch.zip` layout and `manifest_patch.json` schema: [API Reference → Asset Patching](doc/api-reference.md#asset-patching). Server protocol, signing, disabling auto-init: [Architecture](https://pub.dev/documentation/flutter_patcher/latest/topics/Architecture-topic.html).
+Schema reference and advanced configuration: [API Reference → Asset Patching](doc/api-reference.md#asset-patching) · [Architecture](https://pub.dev/documentation/flutter_patcher/latest/topics/Architecture-topic.html).
 
 ### 2. Apply a patch
 
@@ -356,24 +353,33 @@ The full design, Android version differences, blacklist semantics, and diagnosti
 
 ## What can and cannot be patched
 
-A patch replaces the Dart AOT artifact `libapp.so` and Flutter assets declared in `pubspec.yaml`. Everything else — native code, the Flutter Engine, APK resources — must ship through a regular release.
+A patch replaces the Dart AOT artifact `libapp.so` plus any Flutter asset files you opt into. Everything else — native code, the Flutter Engine, APK resources — must ship through a regular release.
 
 ### Hot-patchable
 
 - Anything in `lib/` — widgets, business logic, state, routing, string constants
 - Pure-Dart third-party packages, as long as the native side is unchanged
-- Flutter assets declared in `pubspec.yaml` — images, JSON, font glyphs; anything reachable via `Image.asset(...)` or `rootBundle.load(...)`
+- Flutter asset files that satisfy **both** conditions:
+  1. registered under `assets:` in the new APK's `pubspec.yaml` (so Flutter actually compiles them into the APK)
+  2. listed in `--assets` when you run `pack` (so they end up inside `patch.zip`)
+
+  Code that already reads them via `Image.asset(...)` or `rootBundle.load(...)` picks up the new bytes on the next cold start, no app-side changes required.
 
 ### Not hot-patchable
 
 - Native code: Kotlin / Java / C++, `AndroidManifest.xml`, APK `res/` resources, adding or modifying native plugins
 - Flutter Engine upgrades (a patched `libapp.so` is tied to the engine version baked into the APK)
+- Assets that aren't registered in the new APK's `pubspec.yaml`, or that are registered but you forgot to pass via `--assets` — these never end up in `patch.zip`
+- **Removing** an asset that exists in the base APK (the overlay can only replace bytes under an existing key, not delete it)
+- `pubspec.yaml` font registration changes — Flutter generates the font table at build time, so adding / removing / renaming a font family needs a real release
+- Anything a native plugin reads directly from the APK rather than through `AssetBundle` (our overlay doesn't sit in that path)
 
 ### Evaluate carefully
 
 - **ProGuard / R8 changes**: a mismatched symbol map can make crash stacks unreadable
 - **Multi-ABI / multi-flavor**: the server must shard by `ABI × flavor × versionCode`
 - **Persisted state migrations** (Dart model serialization, DB schema, local cache format): both old and new code must read safely, since a rollback brings old code back against new-format data
+- **Font file replacements**: if you replace the bytes of an already-registered `.ttf` / `.otf`, verify the new glyphs render on a real device first; some platforms cache fonts aggressively
 
 ---
 

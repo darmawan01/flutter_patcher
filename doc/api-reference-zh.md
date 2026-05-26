@@ -182,7 +182,7 @@ if (result.ok) {
 | `md5Mismatch`       | 下载文件 MD5 不匹配（仅在下发了 md5 时才会触发） | 检查 CDN 或服务端 MD5      |
 | `signatureInvalid`  | 签名校验失败                          | 上报安全事件，不重试           |
 | `unsupportedAbi`    | `patch.zip` 不包含当前设备 ABI 的 `libapp.so` | 按 ABI 分发不同 ZIP，或在服务端按 ABI 过滤 |
-| `assetPackageInvalid` | 资源覆盖包损坏：schema 不支持、ZIP 路径不安全、缺 `AssetManifest.bin`、未知 op 等 | 用当前 `pack` CLI 重新打包，详见 [资源补丁](#资源补丁) |
+| `assetPackageInvalid` | `patch.zip` 内容损坏或过期：schema 不支持、ZIP 路径不安全、引用的覆盖文件不在 ZIP 内、读不到基准 APK 的 Flutter 资源表、未知 op 等 | 用相同 Flutter 工具链重建 release APK，再用当前 `pack` CLI 重新打包；详见 [资源补丁](#资源补丁) |
 | `ioError`           | 文件写入、rename 或权限失败               | 稍后重试                 |
 | `unknown`           | 未分类异常                           | 查看 `result.message`  |
 
@@ -459,18 +459,20 @@ dist/
      --assets @patch-assets.txt,assets/last-minute.png
    ```
 
-3. 将 `dist/manifest.json` 和 `dist/patch.zip` 上传到 CDN / 更新接口。
+3. 将 `dist/patch.zip` 上传到 CDN。`dist/manifest.json` 是给**你自己的更新后端**看的旁路文件，里面有版本、MD5、目标 `versionCode`、以及载荷文件名（`payload: patch.zip`）。插件本身只看到你后端通过 `PatchInfo` 下发的内容 —— 请让 `PatchInfo.patchUrl` 指向你托管的 `patch.zip`。
 
 ### 载荷结构（`patch.zip`, v2）
 
 ```text
-manifest.json          # 外层清单，schemaVersion 2
-manifest_patch.json    # AssetManifest.bin 差量操作
-lib/<abi>/libapp.so    # 补丁后的 Dart 代码（即使只改资源，也必须存在）
-assets/<asset-key>     # 覆盖字节，每个 key（及每个分辨率变体）一条
+manifest.json          # 内层清单，schemaVersion 2（lib 映射 + 可选 assets 块）
+manifest_patch.json    # 资源表差量操作（只有打了资源时才存在）
+lib/<abi>/libapp.so    # 补丁后的 Dart 代码（始终存在）
+assets/<asset-path>    # 覆盖字节，每个 path（及每个分辨率变体）一条
 ```
 
-外层 `manifest.json`（由 `mock_server` 和插件读取）携带 `schemaVersion`、`version`、`targetVersionCode`、`abi`、`payload: patch.zip` 和整包 MD5。内层 `manifest.json`（位于 ZIP 内部）则列出 `libapp.so` 与每个覆盖文件的逐文件 MD5。
+纯 Dart 的 `patch.zip`（未传 `--assets`）只包含第一项和第三项；内层 manifest 没有 `assets` 块，`manifest_patch.json` 也不存在。
+
+外层 `manifest.json`（本地联调时由 `mock_server` 消费，生产环境由你的更新后端消费）携带 `schemaVersion`、`version`、`targetVersionCode`、`abi`、`payload: patch.zip` 和整包 MD5。内层 `manifest.json`（位于 ZIP 内部）列出 `libapp.so` 与每个覆盖文件的逐文件 MD5。插件只消费内层的；外层的不会单独进设备。
 
 ### `manifest_patch.json` schema
 
@@ -495,16 +497,17 @@ assets/<asset-key>     # 覆盖字节，每个 key（及每个分辨率变体）
 | 字段         | 含义                                                       |
 | ---------- | -------------------------------------------------------- |
 | `op`       | 目前仅支持 `upsert`                                           |
-| `key`      | 在 `pubspec.yaml` 中注册的 Flutter 资源 key                     |
-| `variants` | 自动从补丁版 APK 的 `AssetManifest.bin` 中读取的分辨率变体（`1.0x`、`2.0x` 等） |
+| `key`      | 在 `pubspec.yaml` `assets:` 下登记的 Flutter 资源路径             |
+| `variants` | 自动从补丁版 APK 的 Flutter 资源表中读取的分辨率变体（`1.0x`、`2.0x` 等）       |
 
-设备端，插件使用 `StandardMessageCodec` 解码基准 `AssetManifest.bin`，逐条应用 `upsert`，再把合并后的 manifest 写入补丁的私有资源目录。随后 Flutter 的 `AssetBundle` 会被 [`LoaderHook`](https://github.com/anthropics/flutter_patcher/blob/main/android/src/main/kotlin/com/flutter_patcher/flutter_patcher/LoaderHook.kt) 重定向到该私有目录。
+**安装阶段**（不是冷启动）插件把这些 op 合并进 APK 的基准资源表，把合并后的资源表与覆盖文件一起写到补丁的私有目录，并打成一个私有 `flutter_assets.apk`。冷启动时 [`LoaderHook`](../android/src/main/kotlin/com/flutter_patcher/flutter_patcher/LoaderHook.kt) 安装一个 patched `FlutterLoader` + `FlutterJNI` AssetManager，把 Flutter 的资源读取重定向到补丁目录；补丁没动过的 path 仍走 APK fallback。
 
-### 资源 key 要求
+### 资源路径要求
 
-* 传给 `--assets` 的每个 key 必须已在补丁版 APK 的 `pubspec.yaml` 中声明（打包器会读取 `AssetManifest.bin` 查找变体；未在 manifest 中出现的 key 会报错）。
-* 可以通过补丁新增资源，前提是在 `pubspec.yaml` 中声明、构建一个含有该资源的新 release APK，再基于该 APK 打包。
-* 设备端按 Flutter 标准方式解析变体；你不需要枚举每个 `2.0x/`、`3.0x/`，打包器会从 manifest 自动展开。
+* 传给 `--assets` 的每个 path 必须已在**补丁版 APK** 的 `pubspec.yaml` `assets:` 下登记。`pack` 会把 path 和 APK 的 Flutter 资源表对照；Flutter 没编进 APK 的 path 会报错。
+* 可以通过补丁新增资源，前提是在 `pubspec.yaml` 中登记、构建包含该资源的新 release APK，再基于该 APK 打包。
+* **不能删除** base APK 已有的资源 —— overlay 只能在已有 path 上替换字节。
+* 设备端按 Flutter 标准方式解析变体；你不需要枚举每个 `2.0x/`、`3.0x/`，打包器会自动展开。
 
 ### ABI 处理
 
@@ -515,26 +518,37 @@ assets/<asset-key>     # 覆盖字节，每个 key（及每个分辨率变体）
 
 ### 校验错误
 
-下列任一情况，插件返回 `assetPackageInvalid`：
+安装阶段下列任一情况，插件返回 `assetPackageInvalid`：
 
-* `schemaVersion` 未知
+* 内层 `schemaVersion` 未知
 * 未识别的资源 `mode`（目前只支持 `overlay`）
-* ZIP 路径不安全（绝对路径、含 `..`、含 NUL 字节）
-* 基准 `flutter_assets` 中缺少 `AssetManifest.bin`
-* `manifest_patch.json` 引用的覆盖文件不在 ZIP 中
-* 内层 `manifest.json` 中的逐文件 MD5 与实际字节不一致
+* ZIP 条目路径不安全（绝对路径、含 `..`、含 NUL 字节）
+* 基准 APK 缺少 overlay 需要合并的 Flutter 资源表（请用相同 Flutter 工具链重建 APK）
+* 内层 manifest 中声明的覆盖文件不在 ZIP 内
+* 内层 manifest 的逐文件 MD5 与实际字节不一致
 
 ### 安全
 
 服务端下发响应里的整包 MD5 / 签名覆盖整个 `patch.zip`。内层逐文件 MD5 仅作为解包阶段的完整性校验，不是独立的安全面 —— 生产环境务必启用外层签名。
 
-### 冷启动时的运行时流程
+### 各阶段做了什么
 
-1. 校验整包 MD5（以及签名，如果设置了 `PatchInfo.signature`）。
-2. 打开 `patch.zip`，校验 `schemaVersion` 与内层 `manifest.json` 的 MD5。
-3. 把解压后的目录从 `staging/` 原子地切换到 `pending/`（详见 [架构 → Atomic install](architecture-zh.md#atomic-install)）。
-4. 将 `manifest_patch.json` 合并进基准 `AssetManifest.bin`。
-5. 标记补丁就绪；下次进程启动时，`LoaderHook` 把 AssetBundle 指向补丁目录，`FlutterLoader` 加载补丁后的 `libapp.so`。
+`applyPatch` 阶段做所有重活，冷启动只校验和加载。具体：
+
+**`applyPatch` 调用期间（安装阶段）：**
+
+1. 把 `patch.zip` 下载到临时文件；校验整包 MD5 + Ed25519 签名（用 `PatchInfo` 中带的值）。
+2. 打开 ZIP，校验内层 `schemaVersion` 与逐文件 MD5。
+3. 把 `lib/<abi>/libapp.so` 解压到 staging。
+4. 如果补丁带资源：把 APK 的 `flutter_assets/` 拷到 staging、按内层 manifest 列出的 path 逐个 overlay、把 overlay 操作合并进资源表、然后把结果打成一个私有 `flutter_assets.apk`。
+5. 把 staging 的产物原子地提交到 `current/`（详见 [架构 → Atomic install](architecture-zh.md#atomic-install)）。
+
+**下一次冷启动：**
+
+1. 校验 `current/` 与宿主 APK 的 `versionCode` 匹配，且磁盘上的 `libapp.so` 仍然与 meta 中的 MD5 一致。
+2. [`LoaderHook`](../android/src/main/kotlin/com/flutter_patcher/flutter_patcher/LoaderHook.kt) 安装 patched `FlutterLoader` + `FlutterJNI` AssetManager，把 Flutter 指向补丁的 `libapp.so` 与（若有资源）私有 `flutter_assets.apk`。
+
+如果校验失败，或进程内的崩溃熔断触发，补丁会被丢弃，下次冷启动回退到 APK 内置版本。
 
 ---
 

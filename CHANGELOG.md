@@ -8,13 +8,14 @@
   fonts, JSON, anything reachable via `Image.asset(...)` or
   `rootBundle.load(...)`) can be patched together with Dart code through
   the same `patch.zip` payload.
-- Added `--assets` to `dart run flutter_patcher:pack`. Pass keys inline
+- Added `--assets` to `dart run flutter_patcher:pack`. Pass paths inline
   (`--assets a,b`) or read them from a UTF-8 text file with the `@` prefix
-  (`--assets @patch-assets.txt`, one key per line, `#` starts a comment);
-  inline keys and `@file` references can be mixed in the same flag.
-  Selected asset keys must be registered in the new APK's `pubspec.yaml`;
-  their registered variants are packed into `patch.zip` and merged into
-  `AssetManifest.bin` on device.
+  (`--assets @patch-assets.txt`, one path per line, `#` starts a comment);
+  inline paths and `@file` references can be mixed in the same flag.
+  Each path must already be registered under `assets:` in the new APK's
+  `pubspec.yaml`; `--assets` only tells `pack` which of those assets to
+  ship inside `patch.zip`. The runtime overlays them on top of the APK's
+  Flutter asset bundle at install time.
 
 ### Changed
 

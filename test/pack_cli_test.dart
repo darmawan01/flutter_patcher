@@ -40,8 +40,7 @@ void main() {
     expect(File('${outDir.path}/libapp.so').existsSync(), isFalse,
         reason: 'pack should no longer emit bare libapp.so');
 
-    final patchZipBytes =
-        await File('${outDir.path}/patch.zip').readAsBytes();
+    final patchZipBytes = await File('${outDir.path}/patch.zip').readAsBytes();
     final outerManifest = jsonDecode(
       await File('${outDir.path}/manifest.json').readAsString(),
     ) as Map<String, dynamic>;
@@ -54,10 +53,12 @@ void main() {
 
     final patchZip = ZipDecoder().decodeBytes(patchZipBytes);
     final entryNames = patchZip.files.map((f) => f.name).toSet();
-    expect(entryNames, containsAll(<String>{
-      'manifest.json',
-      'lib/arm64-v8a/libapp.so',
-    }));
+    expect(
+        entryNames,
+        containsAll(<String>{
+          'manifest.json',
+          'lib/arm64-v8a/libapp.so',
+        }));
     expect(entryNames.contains('manifest_patch.json'), isFalse,
         reason: 'Dart-only patch.zip should not embed manifest_patch.json');
     expect(entryNames.any((n) => n.startsWith('assets/')), isFalse,
@@ -321,7 +322,8 @@ void main() {
 
     final soBytes = utf8.encode('fake libapp.so bytes');
     final archive = Archive()
-      ..addFile(ArchiveFile('lib/arm64-v8a/libapp.so', soBytes.length, soBytes));
+      ..addFile(
+          ArchiveFile('lib/arm64-v8a/libapp.so', soBytes.length, soBytes));
     final apk = File('${temp.path}/app-release.apk');
     await apk.writeAsBytes(ZipEncoder().encode(archive));
 
@@ -351,7 +353,8 @@ void main() {
 
     final soBytes = utf8.encode('fake libapp.so bytes');
     final archive = Archive()
-      ..addFile(ArchiveFile('lib/arm64-v8a/libapp.so', soBytes.length, soBytes));
+      ..addFile(
+          ArchiveFile('lib/arm64-v8a/libapp.so', soBytes.length, soBytes));
     final apk = File('${temp.path}/app-release.apk');
     await apk.writeAsBytes(ZipEncoder().encode(archive));
 

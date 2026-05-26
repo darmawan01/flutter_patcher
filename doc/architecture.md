@@ -39,7 +39,7 @@ A `flutter_patcher` rollout involves three actors: the developer machine, the se
                                                        Boot fail → auto-rollback
 ```
 
-The payload is either a bare `libapp.so` (legacy, code-only) or a v2 `patch.zip` that bundles `libapp.so` plus Flutter asset overlays — `manifest.json` declares which one via `payload`. The plugin never swaps code inside a running process; patches take effect on the next cold start.
+Since 0.1.3 the producer always emits `patch.zip` (a Dart-only patch is just a `patch.zip` without an `assets` block). The on-device runtime also accepts the bare `libapp.so` payloads produced by 0.1.0–0.1.2 to keep older patches loading, but this is a quiet compat path — new patches should be `patch.zip`. The plugin never swaps code inside a running process; patches take effect on the next cold start.
 
 ---
 
@@ -48,24 +48,32 @@ The payload is either a bare `libapp.so` (legacy, code-only) or a v2 `patch.zip`
 On a user device a patch goes through:
 
 ```text
-Download payload (libapp.so or patch.zip)
+applyPatch (install phase)
   ↓
-Parse meta → check versionCode → verify effective MD5 → verify signature (if shipped)
+Download patch.zip → verify outer MD5 + signature
   ↓
-Stage atomically: staging/ → pending/ → promote
+Extract lib/<abi>/libapp.so to staging; for asset patches also
+  copy APK flutter_assets/ → overlay paths → merge asset table
+  → package the result as a private flutter_assets.apk
   ↓
-Wait for the next cold start
+Atomic commit: rename staging artifacts → current/
   ↓
-Cold start loads patched libapp.so (+ merged AssetManifest.bin if assets shipped)
+…wait for the next cold start…
+  ↓
+Cold start: validate current/ (versionCode + MD5 of installed libapp.so)
+  ↓
+LoaderHook redirects Flutter to the patched libapp.so
+  (and to flutter_assets.apk if assets are present)
   ↓
 Boot succeeds: keep using the patch
-Boot fails:    auto-rollback
+Boot fails:    auto-rollback on next start
 ```
 
-Validation order (per [PatchManager.kt:169-290](../android/src/main/kotlin/com/flutter_patcher/flutter_patcher/PatchManager.kt#L169-L290)): meta parse → `versionCode` match → effective MD5 → Ed25519 signature. Signature is only checked when `md5` is present (the signed message is the md5 hex string).
+The bulk of the work (decryption-free integrity checks, asset overlay synthesis, asset-table merge, private archive packaging) happens during `applyPatch` and is committed to `current/` atomically before the call returns. Cold start only re-validates what's on disk and installs the loader hook; it never reopens the ZIP or re-runs the overlay merge.
 
-On every cold start the plugin re-checks that the patch still applies to the current APK before loading it.
-If the patch is invalid, corrupt, mismatched, or blacklisted, the plugin drops it and falls back to the APK's built-in version.
+Validation order at install (per [PatchManager.kt:303-446](../android/src/main/kotlin/com/flutter_patcher/flutter_patcher/PatchManager.kt#L303-L446)): payload MD5 → Ed25519 signature → `versionCode` match (against the inner package manifest) → per-file integrity inside the ZIP. Signature is only checked when `md5` is present (the signed message is the md5 hex string).
+
+At cold start the plugin re-verifies that the on-disk artifacts still belong to this APK (`versionCode` and stored MD5) before loading them. If the patch is invalid, corrupt, mismatched, or blacklisted, the plugin drops it and falls back to the APK's built-in version.
 
 For the full crash-protection decision flow, Android-version differences, and blacklist behavior, see [Crash protection](https://pub.dev/documentation/flutter_patcher/latest/topics/Crash-protection-topic.html).
 
@@ -112,47 +120,54 @@ For the full mechanism, see [Crash protection](https://pub.dev/documentation/flu
 
 ### Payload v2 (`patch.zip`)
 
-Since 0.1.3, `PatchInfo.patchUrl` can point to either a bare `libapp.so` (legacy, `schemaVersion: 1`) or a v2 `patch.zip` (`schemaVersion: 2`). The outer `manifest.json` declares the format via `payload`; the plugin auto-detects and dispatches.
+The `pack` CLI in 0.1.3+ always produces a `patch.zip` (`schemaVersion: 2`). Bare-`libapp.so` payloads built by 0.1.0–0.1.2 are still accepted on device for installed-base compatibility, but no documented producer emits them — assume new patches are always `patch.zip`.
 
 Inside a `patch.zip`:
 
 ```text
-manifest.json          # schemaVersion 2; per-file MD5 for libapp.so + every overlay
-manifest_patch.json    # AssetManifest.bin delta (operations: upsert by asset key)
+manifest.json          # schemaVersion 2; lib map + optional assets block
+manifest_patch.json    # asset-table delta operations (only when assets are packed)
 lib/<abi>/libapp.so    # patched Dart code (always present)
-assets/<asset-key>     # one entry per requested key + per resolution variant
+assets/<asset-path>    # one entry per requested path + per resolution variant
 ```
 
-The runtime extracts the ZIP into a private directory, validates per-file MD5s, merges `manifest_patch.json` into the baseline `AssetManifest.bin`, and writes the result to the patch's private asset folder. See the [API reference → Asset Patching](api-reference.md#asset-patching) for the full schema and validation rules.
+A Dart-only `patch.zip` contains only the inner `manifest.json` and `lib/<abi>/libapp.so`; the runtime detects the missing `assets` block and skips asset synthesis entirely. See the [API reference → Asset Patching](api-reference.md#asset-patching) for the full schema and validation rules.
 
 ---
 
 ### Atomic install
 
-Patch installs are crash-safe. The on-disk state machine (in [PatchManager.kt:622-767](../android/src/main/kotlin/com/flutter_patcher/flutter_patcher/PatchManager.kt#L622-L767)) goes:
+Patch installs are crash-safe. The install path ([PatchManager.kt:482-615](../android/src/main/kotlin/com/flutter_patcher/flutter_patcher/PatchManager.kt#L482-L615), `finalizePatch` at [L622-767](../android/src/main/kotlin/com/flutter_patcher/flutter_patcher/PatchManager.kt#L622-L767)) writes everything in a side directory first, then commits with a sequence of renames:
 
 ```text
-staging/   ← download + verify here
-   ↓ rename
-pending/   ← promoted; next cold start loads this
-   ↓ on first successful boot
-current/   ← active; previous version (if any) lives in previous/
-   ↓ on next install
-previous/  ← garbage-collected lazily
+staging/      ← extract libapp.so; synthesize flutter_assets/ + flutter_assets.apk
+   ↓ renames (one per artifact: so, meta, assets dir, assets.apk)
+pending/      ← short-lived intermediate; lives only inside finalizePatch
+   ↓ rename (the actual commit) — touches an install marker first
+current/      ← what the next cold start loads; previous version moves to previous/
+   ↓ end of finalizePatch
+previous/     ← garbage-collected as part of the same commit
 ```
 
-A power-loss or kill mid-install can leave any of these directories around; on next boot, `recoverInterruptedInstall` ([PatchManager.kt:1146-1172](../android/src/main/kotlin/com/flutter_patcher/flutter_patcher/PatchManager.kt#L1146-L1172)) reconciles them and either resumes or discards the half-installed payload.
+`pending/` is **not** "waiting for first successful boot" — it's the temporary rename target inside `finalizePatch`. Once `applyPatch` returns successfully, `current/` is already promoted and `previous/` has been cleaned up. The "first successful boot" gate is the *crash guard* (see [Crash protection](https://pub.dev/documentation/flutter_patcher/latest/topics/Crash-protection-topic.html)) which deletes `current/` on the next boot if the previous boot tripped the breaker — that's a separate mechanism from the on-disk transaction.
+
+A power-loss or kill mid-install can leave any of `pending/` or `previous/` around with an install marker; on next boot, `recoverInterruptedInstall` ([PatchManager.kt:1146-1172](../android/src/main/kotlin/com/flutter_patcher/flutter_patcher/PatchManager.kt#L1146-L1172)) reconciles them by completing the rollback to `previous/` or discarding the half-installed payload.
 
 ---
 
-### AssetManifest.bin merge
+### Asset overlay synthesis (install phase)
 
-When a patch carries asset overlays, the plugin must teach Flutter where the new bytes live without re-bundling the entire APK. The flow:
+When a patch carries asset overlays, the plugin produces a self-contained, Flutter-readable asset bundle during install. The flow ([PatchManager.kt:482-615](../android/src/main/kotlin/com/flutter_patcher/flutter_patcher/PatchManager.kt#L482-L615), [L848-983](../android/src/main/kotlin/com/flutter_patcher/flutter_patcher/PatchManager.kt#L848-L983)):
 
-1. Read the baseline `AssetManifest.bin` from the APK using `StandardMessageCodec` decoding ([PatchManager.kt:901-983](../android/src/main/kotlin/com/flutter_patcher/flutter_patcher/PatchManager.kt#L901-L983)).
-2. Apply each `upsert` operation from `manifest_patch.json` (replace or insert the variants list for the given asset key).
-3. Re-encode and write the merged manifest into the patch's private asset directory.
-4. On boot, [`LoaderHook`](../android/src/main/kotlin/com/flutter_patcher/flutter_patcher/LoaderHook.kt) installs a custom `FlutterLoader` + `FlutterJNI` AssetManager that resolves Flutter asset reads to the patched directory; APK fallback still works for keys the patch didn't touch.
+1. Copy the base APK's `assets/flutter_assets/*` to a staging directory.
+2. Overlay each path listed in the inner manifest with the bytes packed inside `patch.zip`.
+3. Decode the baseline asset table with `StandardMessageCodec`, apply each `upsert` from `manifest_patch.json` (replace or insert the variants list), and re-encode it.
+4. Verify per-file MD5s against the inner manifest.
+5. Re-zip the staging tree into a private `flutter_assets.apk`, stored alongside the patched `libapp.so`.
+
+Cold start does none of the above. It just walks `current/`, verifies that `libapp.so` + `flutter_assets.apk` (if present) match their stored MD5s, and lets the loader hook do its thing:
+
+[`LoaderHook`](../android/src/main/kotlin/com/flutter_patcher/flutter_patcher/LoaderHook.kt) intercepts `FlutterLoader.findAppBundlePath` to point at the patched `libapp.so`, and (when assets are present) installs a patched `FlutterJNI` AssetManager that opens the private `flutter_assets.apk`. APK fallback still works for paths the patch didn't touch.
 
 `Image.asset(...)`, `rootBundle.load(...)`, and font lookups go through the redirected bundle automatically — no app-side code changes needed.
 
@@ -168,8 +183,8 @@ The runtime retries failed HTTP downloads up to **3 times** with exponential bac
 
 `libapp.so` is not portable across ABIs. The pack CLI's `--abi` flag controls which one ends up in the patch:
 
-* The legacy bare-`.so` payload carries one ABI per patch; the server picks the URL by `deviceAbi`.
-* A v2 `patch.zip` also carries **one** `lib/<abi>/libapp.so` entry. The plugin reads `Build.SUPPORTED_ABIS` in priority order and accepts the first matching entry; mismatches return `unsupportedAbi`.
+* A `patch.zip` carries **one** `lib/<abi>/libapp.so` entry. The plugin reads `Build.SUPPORTED_ABIS` in priority order and accepts the first matching entry; mismatches return `unsupportedAbi`.
+* (Legacy: 0.1.0–0.1.2 bare-`.so` payloads carried one ABI per patch; the server picked the URL by `deviceAbi`. The on-device compat path still accepts these.)
 
 There is no on-device fallback across ABIs — your server is responsible for selecting the right artifact.
 

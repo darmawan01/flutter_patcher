@@ -165,7 +165,8 @@ void _writePatchPackage({
     for (final key in requestedAssets) {
       final variantsRaw = assetManifest[key];
       if (variantsRaw is! List) {
-        throw PackException('asset key not found in AssetManifest.bin: $key', 65);
+        throw PackException(
+            'asset key not found in AssetManifest.bin: $key', 65);
       }
       final variants = variantsRaw
           .map((variant) => Map<String, dynamic>.from(variant as Map))
@@ -243,7 +244,10 @@ void _writePatchPackage({
     }
   }
 
-  final packageBytes = ZipEncoder().encode(package);
+  // archive 3.x returns List<int>?, 4.x returns List<int>; coerce to bytes
+  // so we stay compatible with both major versions of the package.
+  // ignore: unnecessary_nullable_for_final_variable_declarations, dead_null_aware_expression
+  final List<int> packageBytes = ZipEncoder().encode(package) ?? const <int>[];
   final outZip = File('${outDir.path}/patch.zip');
   outZip.writeAsBytesSync(packageBytes);
 

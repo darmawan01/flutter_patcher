@@ -181,7 +181,7 @@ Re-applying the same patch is safe; if it is already installed, the call returns
 | `md5Mismatch` | Downloaded MD5 does not match (only triggered when md5 is provided) | Check CDN / server-side md5 |
 | `signatureInvalid` | Signature verification failed | Treat as a security event; do not retry |
 | `unsupportedAbi` | The `patch.zip` has no `libapp.so` for the device's ABI | Ship per-ABI patches or filter server-side |
-| `assetPackageInvalid` | Asset overlay malformed: bad schema, unsafe zip path, missing `AssetManifest.bin`, unsupported op | Re-pack with the current `pack` CLI; see [Asset Patching](#asset-patching) |
+| `assetPackageInvalid` | `patch.zip` contents are malformed or stale (bad schema, unsafe path, overlay file missing inside the ZIP, base APK's Flutter asset table couldn't be read, unsupported op) | Rebuild the release APK on the same Flutter toolchain, then re-pack with the current `pack` CLI; see [Asset Patching](#asset-patching) |
 | `ioError` | Disk write, rename, or permission failure | Retry later |
 | `unknown` | Unclassified error | Inspect `result.message` |
 
@@ -456,18 +456,20 @@ Since 0.1.3, Flutter assets (images, fonts, JSON, etc.) can be hot-patched toget
      --assets @patch-assets.txt,assets/last-minute.png
    ```
 
-3. Serve `dist/manifest.json` + `dist/patch.zip` from your CDN / update endpoint.
+3. Ship `dist/patch.zip` from your CDN. `dist/manifest.json` is a sidecar that tells **your update backend** the version, MD5, target `versionCode`, and which file is the payload (`payload: patch.zip`). The plugin itself only sees what your backend hands it inside `PatchInfo` — make sure `PatchInfo.patchUrl` points at the hosted `patch.zip`.
 
 ### Payload layout (`patch.zip`, v2)
 
 ```text
-manifest.json          # outer manifest, schemaVersion 2
-manifest_patch.json    # AssetManifest.bin delta operations
-lib/<abi>/libapp.so    # patched Dart code (still required even if only assets changed)
-assets/<asset-key>     # overlay bytes, one entry per requested key (and per resolution variant)
+manifest.json          # inner manifest, schemaVersion 2 (lib map + optional assets block)
+manifest_patch.json    # asset-table delta operations (only present when assets are packed)
+lib/<abi>/libapp.so    # patched Dart code (always present)
+assets/<asset-path>    # overlay bytes, one entry per requested path (and per resolution variant)
 ```
 
-The outer `manifest.json` (read by `mock_server` and the plugin) carries `schemaVersion`, `version`, `targetVersionCode`, `abi`, `payload: patch.zip`, and the package-payload MD5. The inner `manifest.json` (inside the ZIP) lists per-file MD5s for `libapp.so` and every overlay file.
+A Dart-only `patch.zip` (no `--assets`) contains only the first and third entries; the inner manifest omits the `assets` block and `manifest_patch.json` is absent.
+
+The outer `manifest.json` (consumed by `mock_server` for local testing and by your own backend in production) carries `schemaVersion`, `version`, `targetVersionCode`, `abi`, `payload: patch.zip`, and the package-payload MD5. The inner `manifest.json` (inside the ZIP) lists per-file MD5s for `libapp.so` and every overlay file. The plugin only consumes the inner one; the outer one never reaches the device by itself.
 
 ### `manifest_patch.json` schema
 
@@ -492,16 +494,17 @@ The outer `manifest.json` (read by `mock_server` and the plugin) carries `schema
 | Field | Meaning |
 | --- | --- |
 | `op` | Currently only `upsert` is supported. |
-| `key` | Flutter asset key as registered in `pubspec.yaml`. |
-| `variants` | Resolution-aware variants (`1.0x`, `2.0x`, etc.) auto-discovered from the patched APK's `AssetManifest.bin`. |
+| `key` | Flutter asset path as registered under `assets:` in `pubspec.yaml`. |
+| `variants` | Resolution-aware variants (`1.0x`, `2.0x`, etc.) auto-discovered from the patched APK's Flutter asset table. |
 
-On device, the plugin decodes the baseline `AssetManifest.bin` using `StandardMessageCodec`, applies each `upsert`, and writes the merged manifest into the patch's private asset directory. Flutter's `AssetBundle` is then redirected to this private directory by [`LoaderHook`](https://github.com/anthropics/flutter_patcher/blob/main/android/src/main/kotlin/com/flutter_patcher/flutter_patcher/LoaderHook.kt).
+During install (not cold start) the runtime merges these operations into the APK's baseline asset table, writes the merged table plus overlay files into the patch's private directory, and packages the result as a private `flutter_assets.apk`. At cold start [`LoaderHook`](../android/src/main/kotlin/com/flutter_patcher/flutter_patcher/LoaderHook.kt) installs a patched `FlutterLoader` + `FlutterJNI` AssetManager that resolves Flutter asset reads to the patched directory; APK fallback still works for paths the patch didn't touch.
 
-### Asset key requirements
+### Asset path requirements
 
-* Every key passed to `--assets` must already be declared in the patched APK's `pubspec.yaml` (the packer reads `AssetManifest.bin` to discover variants — keys absent from the manifest produce an error).
+* Every path passed to `--assets` must already be declared under `assets:` in the **patched APK's** `pubspec.yaml`. `pack` looks each path up against the APK's Flutter asset table; paths that Flutter didn't compile into the APK produce an error.
 * You can add brand-new assets via a patch as long as you declare them in `pubspec.yaml`, ship a new release APK that contains them, and then pack against that APK.
-* The on-device asset bundle resolves variants the standard Flutter way; you don't need to enumerate every `2.0x/`, `3.0x/`, etc. — the packer expands them from the manifest.
+* You **cannot remove** an asset that exists in the base APK — the overlay only replaces bytes under an existing path.
+* The on-device asset bundle resolves variants the standard Flutter way; you don't need to enumerate every `2.0x/`, `3.0x/`, etc. — the packer expands them automatically.
 
 ### ABI handling
 
@@ -512,26 +515,37 @@ A single `patch.zip` carries `libapp.so` for **one** ABI. The plugin rejects mis
 
 ### Validation errors
 
-The plugin returns `assetPackageInvalid` when the ZIP fails any of these checks:
+The plugin returns `assetPackageInvalid` when the ZIP fails any of these checks at install time:
 
-* `schemaVersion` unknown
+* Inner `schemaVersion` unknown
 * Unsupported asset `mode` (only `overlay` is recognized)
-* Unsafe zip path (absolute, contains `..`, or NUL byte)
-* Missing `AssetManifest.bin` in the baseline `flutter_assets`
-* Overlay file referenced by `manifest_patch.json` missing from the ZIP
-* Per-file MD5 mismatch between `manifest.json` (inner) and the actual bytes
+* Unsafe entry path inside the ZIP (absolute, contains `..`, or NUL byte)
+* The base APK is missing the Flutter asset table that the overlay needs to merge against (rebuild the APK on the same Flutter toolchain)
+* An overlay file declared in the inner manifest is missing from the ZIP
+* Per-file MD5 mismatch between the inner manifest and the actual bytes
 
 ### Security
 
 The outer MD5 / signature in the server's update response cover the whole `patch.zip`. Inner per-file MD5s are integrity checks during extraction, not a separate security surface — keep the outer signature mandatory in production.
 
-### What the runtime does on cold start
+### When work happens
 
-1. Validate outer MD5 (and signature, if `PatchInfo.signature` is set).
-2. Open `patch.zip`, validate `schemaVersion` and inner `manifest.json` MD5s.
-3. Promote the unpacked tree from `staging/` → `pending/` atomically (see [Architecture → Atomic install](architecture.md#atomic-install)).
-4. Merge `manifest_patch.json` into the baseline `AssetManifest.bin`.
-5. Mark the patch ready; on the next process boot, `LoaderHook` redirects the AssetBundle to the patched directory and `FlutterLoader` loads the patched `libapp.so`.
+`applyPatch` does the heavy lifting; cold start just validates and loads. Concretely:
+
+**During `applyPatch` (install time):**
+
+1. Download `patch.zip` to a temp file; verify outer MD5 + Ed25519 signature against the value carried in `PatchInfo`.
+2. Open the ZIP, validate inner `schemaVersion` and per-file MD5s.
+3. Extract `lib/<abi>/libapp.so` to staging.
+4. If the patch carries assets: copy the APK's `flutter_assets/` to staging, overlay each path listed in the inner manifest, merge the overlay operations into the asset table, and pack the result into a private `flutter_assets.apk`.
+5. Atomically commit the staged artifacts to `current/` (see [Architecture → Atomic install](architecture.md#atomic-install)).
+
+**On the next cold start:**
+
+1. Verify `current/` matches the host APK's `versionCode` and that the on-disk `libapp.so` still matches its meta MD5.
+2. [`LoaderHook`](../android/src/main/kotlin/com/flutter_patcher/flutter_patcher/LoaderHook.kt) installs a patched `FlutterLoader` + `FlutterJNI` AssetManager that points Flutter at the patched `libapp.so` and (if assets are present) at the private `flutter_assets.apk`.
+
+If validation fails, or the in-process crash guard trips, the patch is dropped and the next cold start falls back to the APK's built-in version.
 
 ---
 

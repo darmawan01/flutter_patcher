@@ -11,10 +11,11 @@
   代码一起通过同一个 `patch.zip` 打包热更。
 - `dart run flutter_patcher:pack` 新增 `--assets`。可以内联传入
   （`--assets a,b`），也可以用 `@` 前缀指向 UTF-8 文本文件
-  （`--assets @patch-assets.txt`，每行一个 key，`#` 开头为注释）；内联与
-  `@file` 可在同一个参数里混用。被选中的 asset key 必须已经在新 APK 的
-  `pubspec.yaml` 中登记；其 manifest variants 会被打进 `patch.zip`，并在
-  设备端合并到 `AssetManifest.bin`。
+  （`--assets @patch-assets.txt`，每行一个 path，`#` 开头为注释）；内联与
+  `@file` 可在同一个参数里混用。每个 path 都必须先在新 APK 的
+  `pubspec.yaml` `assets:` 下登记 —— `--assets` 只是告诉 `pack`：从这些
+  已编入 APK 的资源里挑哪些放进 `patch.zip`。运行时在**安装阶段**把它们
+  overlay 到 APK 的 Flutter 资源 bundle 之上。
 
 ### Changed
 

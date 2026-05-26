@@ -117,15 +117,14 @@ flutter install
 
 体验步骤：
 
-1. 打开 App，看到**蓝色**按钮
+1. 打开 App，显示原始 `assets/patch_demo.png` 图片
 2. 点击 **Apply patch**
 3. 从最近任务划掉并重新打开 App
-4. 按钮变成**红色**，表示补丁生效
+4. 图片已经换成了新的版本 —— asset overlay 生效
 5. 点击 **Rollback**
-6. 再次重启后恢复蓝色
+6. 再次重启后恢复原图
 
-Example 内置了一份预编译的红色主题补丁。  
-`Apply patch` 会读取 asset 字节并调用 `applyPatchBytes`，整个流程不走网络。
+Example 内置了一份预编译的 `patch.zip`，用来替换 `assets/patch_demo.png`。`Apply patch` 读取 asset 字节并调用 `applyPatchBytes`，整个流程不走网络。
 
 ---
 
@@ -206,17 +205,15 @@ dart run flutter_patcher:pack \
 
 - `--version`：补丁版本号（任意字符串）。
 - `--target-version-code`：**用户设备上已安装的基准 APK** 的 `versionCode`，不是补丁版本号，也不是补丁 APK 的版本号。
-- `--assets`：逗号分隔的资源 key；不传则只打 Dart 代码。
+- `--assets`：要打进 `patch.zip` 的资源文件路径。每个路径都必须先在新 APK 的 `pubspec.yaml` `assets:` 下登记 —— `--assets` 只是告诉 `pack`：从这些已编入 APK 的资源里挑哪些放进补丁。不传则只打 Dart 代码。
 
-资源 key 较多时，把 `--assets` 指向一个文本文件，前缀 `@` —— 每行一个 key，`#` 开头为注释，内联和 `@file` 可以混用：
+路径较多时，把 `--assets` 指向一个文本文件，前缀 `@` —— 每行一个路径，`#` 开头为注释，内联和 `@file` 可以混用：
 
 ```bash
 # patch-assets.txt
-# 核心
 assets/hero.png
 assets/strings/zh.json
-# 字体
-assets/fonts/Inter-Bold.ttf
+assets/illustrations/onboarding-1.png
 ```
 
 ```bash
@@ -227,9 +224,9 @@ dart run flutter_patcher:pack \
   --assets @patch-assets.txt,assets/last-minute.png
 ```
 
-产出：`dist/patch.zip` + `dist/manifest.json`，上传 CDN 即可。
+产出：`dist/patch.zip`（真正的补丁载荷）+ `dist/manifest.json`（给**你的后端**看的旁路文件，里面有补丁版本、MD5、目标 `versionCode`，以及载荷文件名 `patch.zip`）。把 `patch.zip` 放到 CDN，让你的更新接口给客户端返回一个 `PatchInfo`，`patchUrl` 指向它即可。
 
-`patch.zip` 结构与 `manifest_patch.json` schema：[API 参考 → 资源补丁](doc/api-reference-zh.md#资源补丁)。服务端协议、签名规范、关闭自动初始化：[架构设计](https://pub.dev/documentation/flutter_patcher/latest/topics/Architecture-topic.html)。
+Schema 参考与进阶配置：[API 参考 → 资源补丁](doc/api-reference-zh.md#资源补丁) · [架构设计](https://pub.dev/documentation/flutter_patcher/latest/topics/Architecture-topic.html)。
 
 ### 2. 应用补丁
 
@@ -355,24 +352,33 @@ Android 10 及以下识别能力有限，建议结合线上崩溃监控和服务
 
 ## 能改什么、不能改什么
 
-补丁可以替换 Dart AOT 产物 `libapp.so` 和 `pubspec.yaml` 中声明的 Flutter 资源。其它内容 —— 原生代码、Flutter Engine、APK 资源 —— 都必须走正常发版。
+补丁可以替换 Dart AOT 产物 `libapp.so`，以及你显式选择的 Flutter 资源文件。其它内容 —— 原生代码、Flutter Engine、APK 资源 —— 都必须走正常发版。
 
 ### 可以热更
 
 - `lib/` 下的任何 Dart 代码：widget、业务逻辑、状态管理、路由、字符串常量
 - 纯 Dart 三方包升级，前提是 native 侧不变
-- `pubspec.yaml` 中声明的 Flutter 资源：图片、JSON、字体字形；凡是 `Image.asset(...)` 或 `rootBundle.load(...)` 能拿到的内容
+- 同时满足以下两个条件的 Flutter 资源文件：
+  1. 已在新 APK 的 `pubspec.yaml` `assets:` 下登记（这样 Flutter 才会把它编进 APK）
+  2. 打包补丁时通过 `--assets` 列出（这样资源才会进入 `patch.zip`）
+
+  现有 `Image.asset(...)` / `rootBundle.load(...)` 调用代码不用动，冷启动后自动读到新字节。
 
 ### 不能热更
 
 - 原生代码：Kotlin / Java / C++，`AndroidManifest.xml`，APK `res/` 资源，新增或修改 native plugin
 - Flutter Engine 升级（补丁 `libapp.so` 与 APK 内置的 Engine 版本强绑定）
+- 没在新 APK 的 `pubspec.yaml` 中登记的资源，或者登记了但忘记传 `--assets` 的资源 —— 它们根本不会进 `patch.zip`
+- **删除** base APK 中已有的资源（overlay 只能在已有 key 上替换字节，不能删除 key）
+- `pubspec.yaml` 中字体注册变更 —— Flutter 在构建期生成字体注册表，新增 / 删除 / 重命名字体家族必须重新发版
+- native plugin 直接绕过 `AssetBundle` 读取 APK 的资源的场景（我们的 overlay 不在那条路径上）
 
 ### 需谨慎评估
 
 - **混淆 / R8 配置变更**：符号映射不一致可能导致崩溃栈不可读
 - **多 ABI / 多 flavor**：服务端需按 `ABI × flavor × versionCode` 分发
 - **持久化状态迁移**（Dart model 序列化、数据库 schema、本地缓存格式）：新旧代码都要能安全读取，因为回滚会让旧代码遇到新格式数据
+- **字体文件替换**：如果只是替换已注册 `.ttf` / `.otf` 的字节，建议在真机先验证新字形渲染正常；某些平台会缓存字体
 
 ---
 

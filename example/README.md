@@ -14,7 +14,7 @@ flutter install
 Tap **Apply patch** → force-stop → reopen → image changes.
 Tap **Rollback** → cold-start → image reverts to the APK version.
 
-For payload layout, `manifest_patch.json` schema, and pack CLI flags, see
+For `--assets` usage, the `patch.zip` layout, and other pack CLI flags, see
 [API Reference → Asset Patching](../doc/api-reference.md#asset-patching).
 The bundled `assets/asset_patch_preload.zip` was produced by the same flow.
 
