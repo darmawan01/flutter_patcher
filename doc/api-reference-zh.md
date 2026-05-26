@@ -181,6 +181,8 @@ if (result.ok) {
 | `network`           | 下载失败                            | 稍后重试                 |
 | `md5Mismatch`       | 下载文件 MD5 不匹配（仅在下发了 md5 时才会触发） | 检查 CDN 或服务端 MD5      |
 | `signatureInvalid`  | 签名校验失败                          | 上报安全事件，不重试           |
+| `unsupportedAbi`    | `patch.zip` 不包含当前设备 ABI 的 `libapp.so` | 按 ABI 分发不同 ZIP，或在服务端按 ABI 过滤 |
+| `assetPackageInvalid` | 资源覆盖包损坏：schema 不支持、ZIP 路径不安全、缺 `AssetManifest.bin`、未知 op 等 | 用当前 `pack` CLI 重新打包，详见 [资源补丁](#资源补丁) |
 | `ioError`           | 文件写入、rename 或权限失败               | 稍后重试                 |
 | `unknown`           | 未分类异常                           | 查看 `result.message`  |
 
@@ -389,7 +391,7 @@ try {
 
 ## pack CLI
 
-`flutter_patcher:pack` 用于从 release APK 中提取 `libapp.so`，并生成补丁元数据。
+`flutter_patcher:pack` 用于从 release APK 中提取 `libapp.so`（并可选地提取 Flutter 资源覆盖），生成补丁元数据。
 
 ```bash
 dart run flutter_patcher:pack \
@@ -398,13 +400,14 @@ dart run flutter_patcher:pack \
   --target-version-code 100
 ```
 
-| 参数                            | 说明                                             |
-| ----------------------------- | ---------------------------------------------- |
-| `--apk <path>`                | 必填，release APK 路径                              |
-| `--version <string>`          | 必填，补丁版本标识                                      |
-| `--target-version-code <int>` | 必填，补丁适用的宿主 APK `versionCode`                   |
-| `--abi <string>`              | 可选，默认按 `arm64-v8a`、`armeabi-v7a`、`x86_64` 顺序选择 |
-| `--out <dir>`                 | 可选，输出目录，默认 `dist/`                             |
+| 参数                            | 说明                                                       |
+| ----------------------------- | -------------------------------------------------------- |
+| `--apk <path>`                | 必填，release APK 路径                                        |
+| `--version <string>`          | 必填，补丁版本标识                                                |
+| `--target-version-code <int>` | 必填，补丁适用的宿主 APK `versionCode`                             |
+| `--abi <string>`              | 可选，默认按 `arm64-v8a`、`armeabi-v7a`、`x86_64` 顺序选择           |
+| `--assets <KEY[,KEY...]>`     | 可选，要覆盖的 Flutter 资源 key 列表，逗号分隔。也可写成 `@path/to/list.txt` 从 UTF-8 文本文件读取（每行一个 key，`#` 开头为注释）；内联与 `@file` 可混用，如 `--assets @list.txt,assets/extra.png`。详见 [资源补丁](#资源补丁) |
+| `--out <dir>`                 | 可选，输出目录，默认 `dist/`                                       |
 
 `--target-version-code` 绑定的是用户设备上已安装的基准 APK。
 
@@ -417,15 +420,121 @@ dart run flutter_patcher:pack \
 如果 APK 升级到新的 `versionCode`，旧补丁会自动失效。
 如果线上同时存在多个 `versionCode`，请分别为每个基准版本构建补丁。
 
-构建产物：
+构建产物（恒为 `schemaVersion: 2`，`payload: patch.zip`）：
 
 ```text
 dist/
-├── libapp.so
+├── patch.zip
 └── manifest.json
 ```
 
-将 `libapp.so` 和 `manifest.json` 上传到 CDN 后，即可通过你的更新接口下发。
+将两个文件上传 CDN，更新接口返回 `manifest.json` 即可，插件读取 `manifest.payload` 后下载 `patch.zip`。未传 `--assets` 时，`patch.zip` 内只含 `manifest.json` + `lib/<abi>/libapp.so`（内部 manifest 不包含 `assets` 块）；传了 `--assets` 时，额外内嵌 `manifest_patch.json` 和每个 key 的覆盖文件。详见 [资源补丁](#资源补丁)。
+
+---
+
+## 资源补丁
+
+自 0.1.3 起，Flutter 资源（图片、字体、JSON 等）可以和 Dart 代码一起通过 v2 `patch.zip` 热更新。调用代码不需要改动 —— `Image.asset('assets/hero.png')`、`rootBundle.load('assets/strings/zh.json')` 等保持原样；下次冷启动时插件会在同样的 key 下覆盖新的字节。
+
+### 工作流
+
+1. 重新构建一个 release APK，其中包含改动后的资源（以及任何引用它们的 Dart 代码），并确保资源在 `pubspec.yaml` 中已声明。
+2. 用 `--assets` 列出要覆盖的资源 key 进行打包：
+
+   ```bash
+   dart run flutter_patcher:pack \
+     --apk path/to/patched-release.apk \
+     --version 1.0.1 \
+     --target-version-code 2 \
+     --assets assets/hero.png,assets/strings/zh.json
+   ```
+
+   key 较多时，把 `--assets` 指向一个文本文件，前缀 `@`（每行一个 key，`#` 开头为注释），内联与 `@file` 可在同一个参数里混用：
+
+   ```bash
+   dart run flutter_patcher:pack \
+     --apk path/to/patched-release.apk \
+     --version 1.0.1 \
+     --target-version-code 2 \
+     --assets @patch-assets.txt,assets/last-minute.png
+   ```
+
+3. 将 `dist/manifest.json` 和 `dist/patch.zip` 上传到 CDN / 更新接口。
+
+### 载荷结构（`patch.zip`, v2）
+
+```text
+manifest.json          # 外层清单，schemaVersion 2
+manifest_patch.json    # AssetManifest.bin 差量操作
+lib/<abi>/libapp.so    # 补丁后的 Dart 代码（即使只改资源，也必须存在）
+assets/<asset-key>     # 覆盖字节，每个 key（及每个分辨率变体）一条
+```
+
+外层 `manifest.json`（由 `mock_server` 和插件读取）携带 `schemaVersion`、`version`、`targetVersionCode`、`abi`、`payload: patch.zip` 和整包 MD5。内层 `manifest.json`（位于 ZIP 内部）则列出 `libapp.so` 与每个覆盖文件的逐文件 MD5。
+
+### `manifest_patch.json` schema
+
+```json
+{
+  "schemaVersion": 1,
+  "manifestFormat": "bin",
+  "baseManifestSize": 322,
+  "operations": [
+    {
+      "op": "upsert",
+      "key": "assets/hero.png",
+      "variants": [
+        { "asset": "assets/hero.png" },
+        { "asset": "assets/2.0x/hero.png" }
+      ]
+    }
+  ]
+}
+```
+
+| 字段         | 含义                                                       |
+| ---------- | -------------------------------------------------------- |
+| `op`       | 目前仅支持 `upsert`                                           |
+| `key`      | 在 `pubspec.yaml` 中注册的 Flutter 资源 key                     |
+| `variants` | 自动从补丁版 APK 的 `AssetManifest.bin` 中读取的分辨率变体（`1.0x`、`2.0x` 等） |
+
+设备端，插件使用 `StandardMessageCodec` 解码基准 `AssetManifest.bin`，逐条应用 `upsert`，再把合并后的 manifest 写入补丁的私有资源目录。随后 Flutter 的 `AssetBundle` 会被 [`LoaderHook`](https://github.com/anthropics/flutter_patcher/blob/main/android/src/main/kotlin/com/flutter_patcher/flutter_patcher/LoaderHook.kt) 重定向到该私有目录。
+
+### 资源 key 要求
+
+* 传给 `--assets` 的每个 key 必须已在补丁版 APK 的 `pubspec.yaml` 中声明（打包器会读取 `AssetManifest.bin` 查找变体；未在 manifest 中出现的 key 会报错）。
+* 可以通过补丁新增资源，前提是在 `pubspec.yaml` 中声明、构建一个含有该资源的新 release APK，再基于该 APK 打包。
+* 设备端按 Flutter 标准方式解析变体；你不需要枚举每个 `2.0x/`、`3.0x/`，打包器会从 manifest 自动展开。
+
+### ABI 处理
+
+单个 `patch.zip` 只携带 **一个** ABI 的 `libapp.so`。不匹配时插件返回 `unsupportedAbi`。可选方案：
+
+* 按 ABI 各打一份 ZIP（`--abi arm64-v8a`、`--abi armeabi-v7a`……），服务端根据 `deviceAbi` 路由；
+* 如果应用只发 `arm64-v8a` 和 `armeabi-v7a`，可以接受按 ABI 分发的少量额外成本。
+
+### 校验错误
+
+下列任一情况，插件返回 `assetPackageInvalid`：
+
+* `schemaVersion` 未知
+* 未识别的资源 `mode`（目前只支持 `overlay`）
+* ZIP 路径不安全（绝对路径、含 `..`、含 NUL 字节）
+* 基准 `flutter_assets` 中缺少 `AssetManifest.bin`
+* `manifest_patch.json` 引用的覆盖文件不在 ZIP 中
+* 内层 `manifest.json` 中的逐文件 MD5 与实际字节不一致
+
+### 安全
+
+服务端下发响应里的整包 MD5 / 签名覆盖整个 `patch.zip`。内层逐文件 MD5 仅作为解包阶段的完整性校验，不是独立的安全面 —— 生产环境务必启用外层签名。
+
+### 冷启动时的运行时流程
+
+1. 校验整包 MD5（以及签名，如果设置了 `PatchInfo.signature`）。
+2. 打开 `patch.zip`，校验 `schemaVersion` 与内层 `manifest.json` 的 MD5。
+3. 把解压后的目录从 `staging/` 原子地切换到 `pending/`（详见 [架构 → Atomic install](architecture-zh.md#atomic-install)）。
+4. 将 `manifest_patch.json` 合并进基准 `AssetManifest.bin`。
+5. 标记补丁就绪；下次进程启动时，`LoaderHook` 把 AssetBundle 指向补丁目录，`FlutterLoader` 加载补丁后的 `libapp.so`。
 
 ---
 

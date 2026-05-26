@@ -1,5 +1,43 @@
 > Chinese version: [CHANGELOG-zh.md](CHANGELOG-zh.md)
 
+## 0.1.3
+
+### Added
+
+- Added Android cold-start Flutter asset hot updates. Assets (images,
+  fonts, JSON, anything reachable via `Image.asset(...)` or
+  `rootBundle.load(...)`) can be patched together with Dart code through
+  the same `patch.zip` payload.
+- Added `--assets` to `dart run flutter_patcher:pack`. Pass keys inline
+  (`--assets a,b`) or read them from a UTF-8 text file with the `@` prefix
+  (`--assets @patch-assets.txt`, one key per line, `#` starts a comment);
+  inline keys and `@file` references can be mixed in the same flag.
+  Selected asset keys must be registered in the new APK's `pubspec.yaml`;
+  their registered variants are packed into `patch.zip` and merged into
+  `AssetManifest.bin` on device.
+
+### Changed
+
+- `dart run flutter_patcher:pack` now always emits `dist/patch.zip` +
+  `dist/manifest.json` (outer `schemaVersion: 2`, `payload: patch.zip`),
+  whether or not `--assets` is passed. A Dart-only `patch.zip` contains
+  just `manifest.json` + `lib/<abi>/libapp.so`; its inner manifest omits
+  the `assets` block. The previous bare-`.so` output mode is gone.
+- Android runtime detects ZIP payloads, installs overlay asset packages,
+  builds a private `flutter_assets.apk`, and starts Flutter through a
+  patched `FlutterJNI` AssetManager when assets are present. Dart-only
+  `patch.zip` payloads short-circuit the asset overlay pipeline and
+  behave like code-only patches at install time.
+- `mock_server --dist` reads `manifest.payload` and serves the declared
+  file.
+
+### Compatibility
+
+- Bare-`.so` patches produced by 0.1.0–0.1.2 still install on 0.1.3
+  devices (the runtime keeps a quiet legacy install path); the producer
+  CLI no longer emits that format. Server operators should ship
+  `patch.zip` for any new patch built against a 0.1.3+ host APK.
+
 ## 0.1.2
 
 ### Added
@@ -85,8 +123,8 @@ First public release (Android-only beta).
   `strictSignature: true` (the default), signed patches are rejected.
 - **Only full-mode patches are supported**. Differential patching is
   not shipped in 0.1.0 to avoid exposing an unverified path.
-- Hot updates only cover Dart AOT code; assets such as
-  `flutter_assets` and `isolate_snapshot_data` are not replaced.
+- This initial release shipped the legacy lib-only payload path. Asset
+  payloads were added later in 0.1.3.
 
 ### Documentation
 

@@ -5,7 +5,7 @@ import 'package:args/args.dart';
 import 'package:crypto/crypto.dart' as crypto;
 
 const _defaultCheckPath = '/check';
-const _defaultPatchPath = '/libapp.so';
+const _legacyPayload = 'libapp.so';
 
 class MockServerUsageException implements Exception {
   MockServerUsageException(this.message, this.exitCode);
@@ -24,6 +24,7 @@ class MockPatch {
     required this.version,
     required this.md5,
     required this.targetVersionCode,
+    required this.payload,
   });
 
   final File patchFile;
@@ -31,6 +32,7 @@ class MockPatch {
   final String version;
   final String md5;
   final int? targetVersionCode;
+  final String payload;
 }
 
 class MockPatchServerConfig {
@@ -39,8 +41,8 @@ class MockPatchServerConfig {
     this.host = '0.0.0.0',
     this.port = 8080,
     this.checkPath = _defaultCheckPath,
-    this.patchPath = _defaultPatchPath,
-  });
+    String? patchPath,
+  }) : patchPath = patchPath ?? '/${patch.payload}';
 
   final MockPatch patch;
   final String host;
@@ -110,9 +112,10 @@ Future<int> main(List<String> argv) async {
 ArgParser buildArgParser() => ArgParser()
   ..addOption(
     'dist',
-    help: 'Directory containing libapp.so and manifest.json from pack.',
+    help: 'Directory containing manifest.json and the packed payload.',
   )
-  ..addOption('patch', help: 'Path to libapp.so.')
+  ..addOption('patch',
+      help: 'Path to a patch payload (libapp.so or patch.zip).')
   ..addOption(
     'manifest',
     help:
@@ -155,16 +158,17 @@ Future<MockPatch> loadMockPatch({
     throw MockServerUsageException('one of --dist or --patch is required.', 64);
   }
 
-  final patchFile = File(patch ?? '$dist/libapp.so');
+  final manifestFile = manifest != null
+      ? File(manifest)
+      : (dist != null ? File('$dist/manifest.json') : null);
+  final manifestJson = await _readManifestIfPresent(manifestFile);
+  final payload = _parsePayload(manifestJson, patch);
+  final patchFile = File(patch ?? '$dist/$payload');
   if (!patchFile.existsSync()) {
     throw MockServerUsageException(
         'patch file not found: ${patchFile.path}', 66);
   }
 
-  final manifestFile = manifest != null
-      ? File(manifest)
-      : (dist != null ? File('$dist/manifest.json') : null);
-  final manifestJson = await _readManifestIfPresent(manifestFile);
   final bytes = await patchFile.readAsBytes();
 
   final resolvedVersion =
@@ -181,6 +185,7 @@ Future<MockPatch> loadMockPatch({
     version: resolvedVersion,
     md5: resolvedMd5,
     targetVersionCode: resolvedTargetVersionCode,
+    payload: payload,
   );
 }
 
@@ -230,6 +235,7 @@ Future<MockPatchServer> startMockPatchServer(
 Future<void> printServerInfo(MockPatchServer server) async {
   final patch = server.config.patch;
   stdout.writeln('[mock_server] serving ${patch.patchFile.path}');
+  stdout.writeln('[mock_server] payload=${patch.payload}');
   stdout.writeln('[mock_server] version=${patch.version}, md5=${patch.md5}');
   if (patch.targetVersionCode != null) {
     stdout
@@ -308,6 +314,24 @@ String _usage(ArgParser parser) => 'flutter_patcher mock_server CLI\n\n'
     '  dart run flutter_patcher:mock_server --patch dist/libapp.so '
     '[--manifest dist/manifest.json]\n\n'
     '${parser.usage}';
+
+String _parsePayload(Map<String, dynamic> manifestJson, String? explicitPatch) {
+  if (explicitPatch != null) {
+    return Uri.file(explicitPatch).pathSegments.last;
+  }
+  final raw = manifestJson['payload'];
+  if (raw is String && raw.trim().isNotEmpty) {
+    final payload = raw.trim();
+    if (payload.contains('/') ||
+        payload.contains('\\') ||
+        payload.contains('..')) {
+      throw MockServerUsageException(
+          'manifest.payload must be a file name.', 65);
+    }
+    return payload;
+  }
+  return _legacyPayload;
+}
 
 String _indexText(String host, MockPatchServerConfig config) =>
     'flutter_patcher mock server\n\n'

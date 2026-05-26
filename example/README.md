@@ -1,35 +1,37 @@
 # flutter_patcher example
 
-This example demonstrates the local hot-patch flow without a server.
+The smallest end-to-end asset-replacement demo. The screen renders
+`Image.asset('assets/patch_demo.png')`; the bundled patch swaps the image
+under the same asset key on the next cold start.
 
 ## Run
 
 ```bash
-flutter build apk --release
+flutter build apk --debug
 flutter install
 ```
 
-Open the app, tap **Apply patch**, then cold-start the app again. The bundled
-`assets/libapp_preload.so` is installed through `FlutterPatcher.applyPatchBytes`
-and takes effect on the next cold start.
+Tap **Apply patch** → force-stop → reopen → image changes.
+Tap **Rollback** → cold-start → image reverts to the APK version.
 
-Tap **Rollback** and cold-start again to return to the APK-bundled `libapp.so`.
+For payload layout, `manifest_patch.json` schema, and pack CLI flags, see
+[API Reference → Asset Patching](../doc/api-reference.md#asset-patching).
+The bundled `assets/asset_patch_preload.zip` was produced by the same flow.
 
-## Mock server
+## Mock server flow
 
-The package includes a formal local mock server CLI for testing
-`checkUpdate -> applyPatch` from your own app, without depending on this
-example directory:
+For a real over-HTTP flow, build a patched APK and pack it, then run the
+mock server:
 
 ```bash
 dart run flutter_patcher:pack \
-  --apk path/to/app-release.apk \
-  --version dev-1 \
-  --target-version-code 1
+  --apk path/to/patched-app-release.apk \
+  --version dev-asset-1 \
+  --target-version-code 1 \
+  --assets assets/patch_demo.png
 
 dart run flutter_patcher:mock_server --dist dist
 ```
 
-The mock server reads `dist/libapp.so` and `dist/manifest.json`, then exposes
-`GET /check` and `GET /libapp.so` on `0.0.0.0:8080` so a phone on the same
-Wi-Fi can access it.
+The mock server reads `dist/manifest.json` and serves the payload named by
+`manifest.payload`, exposing `GET /check` plus the payload URL.

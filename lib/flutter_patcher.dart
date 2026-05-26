@@ -15,20 +15,23 @@ export 'src/blacklist.dart';
 export 'src/boot_diagnostic.dart';
 export 'src/patch_info.dart';
 
-/// Android libapp.so 热更新入口。
+/// Android-only Flutter hot-update entrypoint.
 ///
-/// 对外只暴露 5 个静态方法/属性：
-/// - [init]           启动时调用，执行崩溃检测 + 下发配置 + 首帧清熔断
-/// - [checkUpdate]    向服务端发起补丁检查
-/// - [applyPatch]     下载、验签、落盘（下次冷启动生效）
-/// - [rollback]       手动删除当前补丁
-/// - [currentVersion] 磁盘上当前已就绪的补丁版本号；下次冷启动后才会被 Flutter Engine 加载生效
+/// `flutter_patcher` installs a patch payload and loads it on the next cold
+/// start. The payload can be a legacy `libapp.so` or a v2 `patch.zip` that
+/// contains `libapp.so` plus explicitly selected Flutter assets.
 ///
-/// 补丁的加载（反射替换 FlutterLoader）发生在原生 Application.attachBaseContext，
-/// **早于** Dart 引擎启动；Dart 侧的 [init] 做：
-///   1. 标记「启动中」（与原生 attachBaseContext 的标记互相兜底）
-///   2. 下发配置到原生 SharedPreferences（公钥、熔断阈值、loader 字段候选名）
-///   3. 注册首帧回调，渲染完毕后清零熔断计数
+/// Main APIs:
+///
+/// - [init]: configure native startup, crash protection, and first-frame boot
+///   verification.
+/// - [checkUpdate]: optional helper for the built-in minimal update protocol.
+/// - [applyPatch]: download, verify, and install a payload URL.
+/// - [applyPatchBytes]: install an already downloaded payload byte array.
+/// - [rollback]: delete the current patch.
+///
+/// Patches are never swapped into the current process. A successful apply takes
+/// effect only after the next cold start.
 ///
 /// {@category Architecture}
 /// {@category API-reference}
@@ -41,14 +44,12 @@ class FlutterPatcher {
   static bool _bootErrorReported = false;
   static bool _nonAndroidWarned = false;
 
-  /// Dart 错误钩子是否仍可向原生上报熔断（在 verifyAfter 窗口内为 true，窗口
-  /// 关闭后 [_BootVerifier._closeHookWindow] 翻为 false）。
-  /// 与 [_bootReported] 解耦：reportBootSuccess 在首帧立即触发，但钩子继续守
-  /// verifyAfter 秒以捕捉首屏点击型 Dart 异常。
+  /// Whether Dart boot-error hooks can still report failures to native crash
+  /// protection. The first frame clears native boot state immediately; this
+  /// flag keeps Dart-side blank-screen detection alive for [init]'s
+  /// `verifyAfter` window.
   static bool _dartHookActive = true;
 
-  /// 非 Android 平台一次性 warning，避免跨平台项目静默看不出问题。
-  /// 返回 true 表示"当前平台不支持，调用方应立即返回"。
   static bool _notAndroidGuard(String method) {
     if (platform_io.isAndroid) return false;
     if (!_nonAndroidWarned) {
@@ -56,7 +57,7 @@ class FlutterPatcher {
       debugPrint(
         '[FlutterPatcher] WARNING: $method called on ${platform_io.operatingSystem}. '
         'This plugin only supports Android; all calls are no-ops. '
-        'See README > 已知限制与合规.',
+        'See README > What Can Be Patched?',
       );
     }
     return true;
@@ -67,68 +68,38 @@ class FlutterPatcher {
   );
   static Stream<PatchApplyProgress>? _progressStream;
 
-  /// [applyPatch] 过程中的阶段 / 进度事件流（广播）。
+  /// Broadcast progress stream for [applyPatch].
   ///
-  /// 在调用 [applyPatch] **之前** 订阅即可；一次调用期间会依次收到
-  /// `downloading`（可能多次，带字节数）→ `verifying` → `finalizing`
-  /// 各阶段事件。非 Android 平台返回空流。
-  ///
-  /// ```dart
-  /// final sub = FlutterPatcher.applyProgress.listen((p) {
-  ///   switch (p.phase) {
-  ///     case PatchApplyPhase.downloading:
-  ///       setState(() => _progress = p.fraction ?? 0);
-  ///       break;
-  ///     case PatchApplyPhase.verifying:
-  ///     case PatchApplyPhase.finalizing:
-  ///       // 可刷新"处理中..."UI
-  ///       break;
-  ///   }
-  /// });
-  /// final result = await FlutterPatcher.applyPatch(info);
-  /// await sub.cancel();
-  /// ```
+  /// Subscribe before calling [applyPatch] to receive `downloading`,
+  /// `verifying`, and `finalizing` events. Non-Android platforms return an
+  /// empty stream.
   static Stream<PatchApplyProgress> get applyProgress {
     if (_notAndroidGuard('applyProgress')) return const Stream.empty();
     return _progressStream ??= _eventChannel.receiveBroadcastStream().map(
-      (raw) => PatchApplyProgress.fromNative(raw),
-    );
+          (raw) => PatchApplyProgress.fromNative(raw),
+        );
   }
 
-  /// 启动时调用。幂等。
+  /// Initializes patch configuration and crash protection.
   ///
-  /// - [publicKeyBase64] X.509 SubjectPublicKeyInfo（DER）Base64 编码的 Ed25519
-  ///   公钥。为空时跳过签名校验，仅靠 MD5 + HTTPS 防篡改。若 [PatchInfo.md5]
-  ///   也为空则签名校验也会一并跳过（签名输入即 md5 hex）。
-  /// - [maxCrashCount]   熔断器容忍的连续启动失败次数，默认 **1（fail-fast）**。
-  ///   补丁加载后崩溃是明确"补丁有问题"信号，1 次崩溃即丢弃 + 入黑名单。
-  ///   如需保留 0.0.x 时代的"崩 2 次才回滚"行为，显式传 `maxCrashCount: 2`。
-  /// - [strictSignature] Ed25519 验签严格模式，默认 **true**（推荐）。
-  ///   Android JDK 在 API 33+ 才支持 Ed25519；低版本设备遇到带签名的补丁时：
-  ///   - `true`：拒绝加载（防止攻击者通过降级到低版本设备绕过签名）
-  ///   - `false`：跳过签名校验，仅保留 MD5 + HTTPS 防护（不推荐，除非确定
-  ///     支持设备范围主要在 API 33 以下且接受此风险）
-  /// - [loaderFieldCandidates] `FlutterInjector` 内部字段名候选列表。默认
-  ///   `['flutterLoader']` 覆盖 Flutter 3.19 ~ 3.38。未来新版 Flutter 改名时，
-  ///   **不升级本库** 的前提下通过传入新名字即可适配。
-  /// - [loaderFallbackHeuristic] 当 [loaderFieldCandidates] 和类型匹配都失败后，
-  ///   是否启用启发式扫描"第一个非 static、非 ExecutorService 的实例字段"作为
-  ///   最后兜底。默认 **false**（安全）：宁可退回 APK 内置 .so，也不瞎设字段
-  ///   导致不可预测的崩溃。只有你明确知道要这么做（比如适配新 Flutter 私有
-  ///   API 调研过程中）才应打开。
-  /// - [verifyAfter] 首帧渲染后 Dart 错误钩子继续监听的窗口长度，默认 5 秒。
-  ///   补丁的"安全确认"在首帧渲染时立即完成（清熔断 + 清 patch_loading），从此
-  ///   用户从最近任务划掉等"非崩溃退出"不会被误判为崩溃。本参数只控制 Dart 层
-  ///   错误钩子（PlatformDispatcher.onError / FlutterError.onError）还多守 N 秒，
-  ///   捕捉首屏点击立即触发的白屏型 Dart 异常。
-  ///   - 越短：误捕业务自身异常的概率越小，但漏掉首屏点击型 Dart 异常的可能越大
-  ///   - 越长：捕捉更多 post-first-frame Dart 故障，但用户在窗口内做的非补丁
-  ///     相关 Dart 异常也会被误计入熔断
-  ///   注：计时只在 [AppLifecycleState.resumed] 状态累计；后台时挂起。
+  /// Call this in `main()` before `runApp()`. The method is idempotent.
   ///
-  /// 约定：
-  /// - 调用者应在 `main()` 里、`runApp()` 之前 `await` 本方法
-  /// - 本方法 **不会** 重新加载 libapp.so —— 运行时切换发生在下次冷启动
+  /// [publicKeyBase64] is an optional X.509 SubjectPublicKeyInfo Ed25519 public
+  /// key in base64. Empty disables signature verification. If [PatchInfo.md5]
+  /// is empty, signature verification is skipped as well because the signed
+  /// message is the md5 hex string.
+  ///
+  /// [maxCrashCount] defaults to `1` (fail-fast). Once a loaded patch causes an
+  /// early boot failure, the SDK rolls it back and blacklists the same payload.
+  ///
+  /// [strictSignature] rejects signed patches on Android API < 33, where the
+  /// platform Ed25519 implementation is unavailable.
+  ///
+  /// [loaderFieldCandidates] and [loaderFallbackHeuristic] are advanced Flutter
+  /// embedding compatibility controls. Keep defaults unless adapting a new
+  /// Flutter version.
+  ///
+  /// [verifyAfter] is the post-first-frame Dart error watch window.
   static Future<void> init({
     String publicKeyBase64 = '',
     int maxCrashCount = 1,
@@ -142,21 +113,14 @@ class FlutterPatcher {
     _inited = true;
     _verifyAfter = verifyAfter;
 
-    // 1. 最开头标记「启动中」。与原生 attachBaseContext 内的标记互相兜底。
-    //    如果 Dart init 之前就崩（原生阶段），原生标记生效；
-    //    如果 runApp 之后但首帧前崩，Dart 标记生效。
     try {
       await PatcherChannel.markBooting();
     } catch (e, s) {
       _log('markBooting failed: $e', s);
     }
 
-    // 1.5. 安装 Dart 层未捕获异常钩子，覆盖 ApplicationExitInfo 看不到的"白屏"
-    //      场景：补丁里 main()/build()/异步链 throw 被 framework 接住，进程不死，
-    //      首帧不触发，操作系统记录的 ExitReason 是用户主动关。
     _installBootErrorCatchers();
 
-    // 2. 下发配置（给 **下次** 冷启动的原生验签用）
     try {
       await PatcherChannel.saveConfig(
         publicKeyBase64: publicKeyBase64,
@@ -169,18 +133,13 @@ class FlutterPatcher {
       _log('saveConfig failed: $e', s);
     }
 
-    // 3. 首帧渲染立即清熔断；Dart 错误钩子再守 verifyAfter 秒
     _BootVerifier.start();
   }
 
-  /// 主动标记补丁可信，重置熔断计数（通常由 [init] 在首帧渲染时自动触发）。
+  /// Marks the current patched boot as successful and clears native crash
+  /// protection state.
   ///
-  /// 暴露为 public 以便调用方在 **首帧之前** 用自定义判定逻辑提前确认补丁可信
-  /// （比如在 `main()` 里跑一段轻量自检，确认通过后立即调用本方法）。首帧后再
-  /// 调用是 no-op（[_BootVerifier] 已自动调过）。
-  ///
-  /// 注：本方法只清原生侧 patch_loading + crash_count。Dart 错误钩子的
-  /// verifyAfter 窗口由 [_BootVerifier] 独立计时，不受本调用影响。
+  /// Usually called automatically by [init] after the first frame.
   static Future<void> reportBootSuccess() async {
     if (_notAndroidGuard('reportBootSuccess')) return;
     if (_bootReported) return;
@@ -192,26 +151,13 @@ class FlutterPatcher {
     }
   }
 
-  /// 便捷 HTTP 更新检查 —— **可选工具**，不是核心 API。
+  /// Optional HTTP update checker for the built-in minimal JSON protocol.
   ///
-  /// 本插件不绑定任何后端协议。推荐的姿势是：你自己用任何方式拉到补丁元信息，
-  /// 直接 `new PatchInfo(...)` 传给 [applyPatch]。只有在你愿意让后端按约定
-  /// 协议返回时，才用这个方法省掉 HTTP 样板。
+  /// Production apps can skip this method, parse their own update response, and
+  /// construct [PatchInfo] directly before calling [applyPatch].
   ///
-  /// 约定响应（有更新）：
-  /// ```json
-  /// {
-  ///   "hasUpdate": true,
-  ///   "patch": {
-  ///     "version": "1.0.1-h1",
-  ///     "patchUrl": "https://.../libapp.so",
-  ///     "md5": "<32 hex>",
-  ///     "targetVersionCode": 100,
-  ///     "signature": "<base64 ed25519 sig of md5 hex>"
-  ///   }
-  /// }
-  /// ```
-  /// 无更新：`{"hasUpdate": false}`。
+  /// The returned `patchUrl` is a payload URL: `libapp.so` for lib-only patches
+  /// or `patch.zip` for asset patches.
   static Future<PatchCheckResult> checkUpdate(
     String url, {
     Map<String, String>? headers,
@@ -236,24 +182,20 @@ class FlutterPatcher {
     }
   }
 
-  /// 下载并安装指定补丁。
+  /// Downloads, verifies, and installs [patchInfo]'s payload.
   ///
-  /// 全流程（Android 原生侧实现）：
-  /// 1. HTTP 下载到临时文件（指数退避重试）
-  /// 2. MD5 校验（[PatchInfo.md5] 为空时跳过；同时签名校验也一并跳过）
-  /// 3. Ed25519 签名校验（[PatchInfo.signature] 非空、配置了公钥、且 md5 非空时）
-  /// 4. 原子 rename 到补丁目录
-  /// 5. 写入 meta.json，标记「下次冷启动生效」
+  /// The payload can be either a complete `libapp.so` or a v2 `patch.zip`.
+  /// Native code detects ZIP payloads automatically.
   ///
-  /// 返回 [PatchApplyResult]：`ok=true` 表示补丁已就绪；否则 [PatchApplyResult.error]
-  /// 给出失败分类，见 [PatchApplyError]。本次调用 **不会** 立即切换运行时的
-  /// libapp.so —— 必须冷启动才能生效。
+  /// Flow:
   ///
-  /// 幂等：传入已安装过的相同 [PatchInfo.version] 会直接返回 `ok=true`，不会重复下载。
+  /// 1. Download with retry.
+  /// 2. Verify payload md5/signature when provided.
+  /// 3. Install legacy lib-only payload, or parse and install v2 package.
+  /// 4. Commit patch files transactionally for the next cold start.
   ///
-  /// [onProgress] 是 [applyProgress] 的便捷形态：传入回调后内部自动订阅广播流，
-  /// 完成时自动取消。需要细粒度生命周期控制（比如多次复用同一订阅）的高级
-  /// 场景仍可直接用 [applyProgress]，两者可共存。
+  /// Returns a [PatchApplyResult]. `ok=true` means the patch is installed and
+  /// will take effect on the next cold start.
   static Future<PatchApplyResult> applyPatch(
     PatchInfo patchInfo, {
     void Function(PatchApplyProgress)? onProgress,
@@ -281,23 +223,13 @@ class FlutterPatcher {
 
   static String? _cachedStagingDir;
 
-  /// In-memory bytes 形态的便捷入口，省去用户侧 staging + path_provider + crypto。
+  /// Installs an already downloaded patch payload.
   ///
-  /// 适用场景：
-  /// - 从 asset 读出来的预置补丁（rootBundle.load）
-  /// - 自定义网络栈 / isolate 拿到的字节流
-  /// - 任何"已经把 .so 抓到 Uint8List"的情况
+  /// Useful for bundled example patches, custom downloaders, or isolate-based
+  /// loading. The bytes can be either `libapp.so` or `patch.zip`.
   ///
-  /// 内部流程：
-  /// 1. 写到原生 cacheDir 的临时文件（避免 MethodChannel 传 MB 级字节数组撞 Binder 限制）
-  /// 2. 自动算 md5（用户无需引 crypto 包）
-  /// 3. 复用 [applyPatch] 主流程（file:// → 校验 → 落盘）
-  /// 4. 不论成败都清理 staging 文件
-  ///
-  /// HTTP / 服务端下发协议场景仍用 [applyPatch] + [PatchInfo]。
-  ///
-  /// [signature] 可选：Ed25519 签名（base64）。空字符串跳过签名校验。
-  /// [targetVersionCode] 可选：不传则原生侧自动绑定到当前 APK versionCode。
+  /// This helper writes bytes to native cache, computes md5, then reuses
+  /// [applyPatch] through a `file://` URL.
   static Future<PatchApplyResult> applyPatchBytes(
     Uint8List bytes, {
     required String version,
@@ -341,12 +273,13 @@ class FlutterPatcher {
           await platform_io.deleteFileIfExists(stagedPath);
         }
       } catch (_) {
-        // staging 文件清理失败不阻塞主流程；下次 staging 用新时间戳避免冲突。
+        // Staging cleanup must not block the apply result.
       }
     }
   }
 
-  /// 手动回滚：删除补丁文件 + 重置 meta。下次冷启动回到 APK 内置版本。
+  /// Deletes the current patch. The next cold start uses the APK built-in
+  /// version. Manual rollback does not blacklist the patch.
   static Future<void> rollback() async {
     if (_notAndroidGuard('rollback')) return;
     try {
@@ -356,15 +289,7 @@ class FlutterPatcher {
     }
   }
 
-  /// 当前宿主 APK 的 versionCode（API 28+ 用 longVersionCode）。
-  ///
-  /// 用途：组装 [PatchInfo.targetVersionCode] 时不必让用户去引 `package_info_plus`。
-  /// - 同 versionCode 场景（最常见）：完全可以不传 targetVersionCode，原生侧
-  ///   会在 `applyPatch` 当下自动绑定到这个值
-  /// - 跨 versionCode 场景（你想让某补丁绑定到尚未发布的 APK）：用本 getter
-  ///   读出当前值后做差量，自己拼 [PatchInfo]
-  ///
-  /// 失败 / 非 Android 平台返回 null。
+  /// Current host APK versionCode. Returns null on failure/non-Android.
   static Future<int?> get appVersionCode async {
     if (_notAndroidGuard('appVersionCode')) return null;
     try {
@@ -374,7 +299,7 @@ class FlutterPatcher {
     }
   }
 
-  /// 当前设备 ABI，用于服务端按 ABI 下发对应的 libapp.so。
+  /// Current device ABI. Useful when your backend routes patches per ABI.
   static Future<String> get deviceAbi async {
     if (_notAndroidGuard('deviceAbi')) return '';
     try {
@@ -384,10 +309,11 @@ class FlutterPatcher {
     }
   }
 
-  /// 磁盘上当前已就绪的补丁版本号（来自 `meta.json`）。
+  /// Patch version currently installed on disk.
   ///
-  /// `applyPatch` 成功后立即可读到新版本，但需冷启动后 Flutter Engine 才会真正加载该 `libapp.so`。
-  /// 无补丁时返回 `null`。
+  /// A successful `applyPatch` updates this immediately, but the patch is only
+  /// loaded by Flutter after the next cold start. Returns null when no patch is
+  /// installed.
   static Future<String?> get currentVersion async {
     if (_notAndroidGuard('currentVersion')) return null;
     try {
@@ -399,21 +325,11 @@ class FlutterPatcher {
     }
   }
 
-  /// 已知"装上就出事"的补丁本地黑名单（按入黑时间从旧到新排序）。
+  /// Local bad-patch blacklist, ordered from oldest to newest.
   ///
-  /// 自动入黑名单的触发条件：
-  /// - 补丁加载后启动失败到达 [maxCrashCount]（默认 1，fail-fast）
-  /// - 本地 .so 的 md5 校验失败（文件损坏 / 篡改）
-  /// - Ed25519 签名校验失败（可能被篡改 / 严格模式 API < 33）
-  ///
-  /// 命中黑名单的 (version, md5)：
-  /// - 再次调用 [applyPatch] / [applyPatchBytes] 直接返回 [PatchApplyError.blacklisted]
-  /// - 即使服务端持续下发同一份，客户端也不下载，连流量都不浪费
-  /// - 黑名单跨 APK 升级保留，仅 [clearBlacklist] / `pm clear` 可清空
-  ///
-  /// 业务侧通常用法：将本列表上报到监控，结合 [PatchBootDiagnostic] 一并定位。
-  ///
-  /// 非 Android 平台 / 失败时返回空列表。
+  /// Automatic blacklist triggers include early boot failures, cold-start md5
+  /// mismatches, and cold-start signature failures. For asset patches, the md5
+  /// is the `patch.zip` payload md5.
   static Future<List<BlacklistEntry>> get blacklist async {
     if (_notAndroidGuard('blacklist')) return const [];
     try {
@@ -429,12 +345,9 @@ class FlutterPatcher {
     }
   }
 
-  /// 清空整个黑名单。**慎用**：通常只在以下场景调用：
-  /// - 单元测试 / 真机调试时希望让某 (version, md5) 重新可装
-  /// - 业务上线后确认服务端已修复，给设备一次"再试一次"的机会
+  /// Clears the local bad-patch blacklist.
   ///
-  /// 不接受按条目精准移除：黑名单条目数量上限 50（见原生 `BlacklistStore.MAX_ENTRIES`），
-  /// 全量清空成本极低；按条移除反而易给上层"我能选择性放行某个有问题补丁"的错觉。
+  /// Intended for tests, local debugging, or deliberate operational recovery.
   static Future<void> clearBlacklist() async {
     if (_notAndroidGuard('clearBlacklist')) return;
     try {
@@ -444,30 +357,11 @@ class FlutterPatcher {
     }
   }
 
-  /// 上次冷启动时补丁的加载诊断结果。
+  /// Last cold-start patch loading diagnostic.
   ///
-  /// `applyPatch` 返回的 [PatchApplyResult] 只覆盖"装的时候"失败。补丁装上之后，
-  /// 下次冷启动可能因 versionCode 不匹配、签名失败、熔断器触发、反射注入失败
-  /// 等原因被原生侧丢弃 —— 这些事件原本仅写 logcat，业务侧拿不到。本 API 把
-  /// 这些事件结构化暴露给 Dart，用于监控上报和用户提示。
-  ///
-  /// - 返回 `null`：宿主从未冷启动经过本插件（首次安装 / `pm clear` 后）
-  /// - 返回 [PatchBootDiagnostic]：本字段在每次冷启动 attachBaseContext 时被原生侧
-  ///   覆写。Dart 业务可在 [init] 之后立即查询，反映的是**上次**冷启动结果，
-  ///   而非本次。
-  ///
-  /// ```dart
-  /// final diag = await FlutterPatcher.lastBootDiagnostic;
-  /// if (diag != null && !diag.isHealthy) {
-  ///   analytics.report('patch_dropped', {
-  ///     'status': diag.status.name,
-  ///     'patch_version': diag.patchVersion,
-  ///     'patch_vc': diag.patchTargetVersionCode,
-  ///     'app_vc': diag.appVersionCode,
-  ///     'crash_count': diag.crashCount,
-  ///   });
-  /// }
-  /// ```
+  /// `applyPatch` reports install-time failures. This getter reports what
+  /// happened on the next cold start: version mismatch, md5/signature failure,
+  /// crash rollback, loader hook failure, or successful patch load.
   static Future<PatchBootDiagnostic?> get lastBootDiagnostic async {
     if (_notAndroidGuard('lastBootDiagnostic')) return null;
     try {
@@ -480,36 +374,22 @@ class FlutterPatcher {
     }
   }
 
-  // ==================== 内部 ====================
-
-  /// [_BootVerifier] 用：覆盖默认 5 秒，由 [init] 写入。
   static Duration _verifyAfter = const Duration(seconds: 5);
 
-  /// 装 PlatformDispatcher.onError + FlutterError.onError 双钩子，把 verifyAfter
-  /// 窗口内的 Dart 未捕获异常上报给原生熔断器（语义等同于 ApplicationExitInfo
-  /// REASON_CRASH，弥补 framework 把异常吞掉、进程不死的检测盲区）。
-  ///
-  /// 钩子始终保持安装状态，但只在 [_dartHookActive] = true 期间真正向原生上报；
-  /// 窗口关闭后变成透明转发原 handler。这样既不会重复 install/uninstall（避免和
-  /// 业务自己装的 handler 互相打架），也保证 verifyAfter 后的业务异常不会被误
-  /// 归到补丁头上。
   static void _installBootErrorCatchers() {
     final priorPlatformHandler = PlatformDispatcher.instance.onError;
     PlatformDispatcher.instance.onError = (error, stack) {
       _maybeReportBootError(error, stack);
-      // 还回原 handler；没有就按 Flutter 默认未处理（false → 让 framework 走默认 print）
       return priorPlatformHandler?.call(error, stack) ?? false;
     };
 
     final priorFlutterHandler = FlutterError.onError;
     FlutterError.onError = (details) {
       _maybeReportBootError(details.exception, details.stack);
-      // framework 错误：交回原 handler（默认会把红屏 / dump stack）
       (priorFlutterHandler ?? FlutterError.presentError).call(details);
     };
   }
 
-  /// verifyAfter 窗口内一次性上报。窗口已关闭或已上报过都直接 no-op。
   static void _maybeReportBootError(Object error, StackTrace? stack) {
     if (!_dartHookActive) return;
     if (_bootErrorReported) return;
@@ -536,20 +416,6 @@ class PatcherException implements Exception {
   String toString() => 'PatcherException: $message';
 }
 
-/// 解耦的两段式 boot 验证：
-///
-/// 1. **首帧渲染 → 立即 [FlutterPatcher.reportBootSuccess]**
-///    清原生侧 patch_loading + crash_count，避免"用户从最近任务划掉"等非崩溃
-///    退出在 API < 30 设备上被误判为崩溃。原生侧仍保留 last_booting_pid，下
-///    次冷启动 API 30+ 仍可通过 ApplicationExitInfo 检测首帧后才发生的 native
-///    crash / ANR。
-///
-/// 2. **首帧 + 前台累计存活 [FlutterPatcher._verifyAfter] → 关闭 Dart 错误钩子**
-///    Dart 层 throw 被 framework 吞掉、进程不死的"白屏"故障由钩子捕获并上报
-///    熔断；窗口关闭后业务自己的异常不再被归到补丁。
-///
-/// 只在 [AppLifecycleState.resumed] 累计：避免用户启动后立刻 home 出去，Dart
-/// isolate 被挂起期间的"无异常"被错误计入存活时间。
 class _BootVerifier with WidgetsBindingObserver {
   static _BootVerifier? _instance;
 
@@ -558,7 +424,6 @@ class _BootVerifier with WidgetsBindingObserver {
   Timer? _timer;
   bool _windowClosed = false;
 
-  /// 等首帧后启动 verifier。多次调用幂等。
   static void start() {
     if (_instance != null) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -567,13 +432,10 @@ class _BootVerifier with WidgetsBindingObserver {
   }
 
   void _begin() {
-    // 首帧渲染：立即标记补丁可信，清原生 patch_loading + crash_count。
-    // Dart 错误钩子继续在 verifyAfter 秒内监听首屏点击型故障。
     FlutterPatcher.reportBootSuccess();
 
     final binding = WidgetsBinding.instance;
     binding.addObserver(this);
-    // 首帧渲染时通常已在 resumed；保险起见显式判一下当前 state
     final state = binding.lifecycleState;
     if (state == null || state == AppLifecycleState.resumed) {
       _resumedAt = DateTime.now();
@@ -588,7 +450,6 @@ class _BootVerifier with WidgetsBindingObserver {
       _resumedAt = DateTime.now();
       _scheduleCheck();
     } else {
-      // 进后台 → 冻结已累计的前台时间，停掉计时器
       if (_resumedAt != null) {
         _foregroundElapsed += DateTime.now().difference(_resumedAt!);
         _resumedAt = null;

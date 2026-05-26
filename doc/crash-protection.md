@@ -102,28 +102,28 @@ Android's signal for "why did the process exit" varies by version.
 
 ### Android 11+ (API 30+)
 
-Android 11+ supports `ApplicationExitInfo`, which lets us distinguish:
+Android 11+ supports `ActivityManager.getHistoricalProcessExitReasons`, which lets `CrashGuard` distinguish:
 
-- Real crashes
-- Native crashes
-- ANRs
-- User-initiated stops
-- Low-memory reclaims
+- Real Dart / framework crashes (`REASON_CRASH`)
+- Native crashes (`REASON_CRASH_NATIVE`)
+- ANRs (`REASON_ANR`)
+- Initialization failures (`REASON_INITIALIZATION_FAILURE`) — e.g. JNI / loader errors before any Dart code runs
+- User-initiated stops, low-memory reclaims, and external SIGKILLs (not counted)
 
-That makes false positives rare, and crashes around the first-frame boundary easier to attribute correctly.
+Looking up the previous session is keyed by the **pid we recorded on `attachBaseContext`**, which `CrashGuard` deliberately retains across successful boots (`KEY_LAST_BOOTING_PID`). That's what lets the next cold start still attribute a *post-first-frame* native crash to the patch — without it we'd only catch failures before the patch_loading flag was cleared.
 
 ### Android 10 and below
 
 Android 10 and below do not have `ApplicationExitInfo`.
-The plugin falls back to local launch state to determine "did the previous launch die mid-patch-load".
+`CrashGuard` falls back to the `patch_loading` flag persisted in SharedPreferences to determine "did the previous launch die mid-patch-load".
 
 This means:
 
-- Boot failures *before* the first frame are usually detected
-- Native crashes / ANRs *after* the first frame may not be attributable to the patch
+- Boot failures *before* the first frame are detected (the flag is still `true`)
+- **Known blind spot:** native crashes or ANRs that happen *after* the first frame are not attributable — the flag was already cleared by `markBootSuccess`. The Dart-error hooks still cover this window for Dart-level failures.
 - Dart errors inside the `verifyAfter` window are still caught by the error hooks
 
-If you need to cover this blind spot on legacy devices, plug in your existing crash-monitoring system and stop delivering the bad patch from the server side as soon as you see it.
+If your traffic on API < 30 is significant, plug in your existing crash-monitoring system and stop delivering the bad patch from the server side as soon as you see it.
 
 ---
 
@@ -198,20 +198,7 @@ Client-side crash protection is the last line of defense. In production, also mo
 
 ### 1. Report boot diagnostics
 
-After every cold start, read `lastBootDiagnostic` and report it:
-
-```dart
-final diag = await FlutterPatcher.lastBootDiagnostic;
-
-if (diag != null && !diag.isHealthy) {
-  analytics.report('patch_dropped', {
-    'status': diag.status.name,
-    'patch_version': diag.patchVersion,
-    'crash_count': diag.crashCount,
-    'message': diag.message,
-  });
-}
-```
+After every cold start, read `lastBootDiagnostic` and report any non-healthy state to your analytics backend. The API and field shapes are documented in [API Reference → Boot diagnostics](api-reference.md#boot-diagnostics).
 
 Watch these states in particular:
 
@@ -283,25 +270,28 @@ While debugging on a real device you can directly see:
 
 ## Circuit-breaker timeline
 
+The state machine lives in [`CrashGuard.kt`](../android/src/main/kotlin/com/flutter_patcher/flutter_patcher/CrashGuard.kt) (not `FlutterPatcherApplication`). Keys are SharedPreferences-backed: `KEY_PATCH_LOADING`, `KEY_CRASH_COUNT`, `KEY_LAST_BOOTING_PID`.
+
 | When | What happens |
 |---|---|
-| `Application.attachBaseContext` | Write `patch_loading=true` and the current pid; used by the next cold start to decide what happened. |
-| Dart `FlutterPatcher.init()` | Write `patch_loading=true` again as a fallback when the native write failed. |
-| First frame rendered | Call `markBootSuccess`, clear `patch_loading` and `crash_count`, and start the `verifyAfter` timer. |
-| Foreground time accumulates `verifyAfter` | Close the Dart-error-hook watch window. |
-| Dart error hook fires | Within the watch window, count one failure and prepare to roll back. |
-| Next cold start `shouldLoadPatch` | Decide whether to load the patch based on the previous launch's state. |
-| `crash_count >= maxCrashCount` | Delete the patch file, add to the blacklist, fall back to the APK's built-in version. |
+| `Application.attachBaseContext` | `markBooting()`: write `patch_loading=true` and the current pid (synchronous `commit()`). |
+| Dart `FlutterPatcher.init()` | Defensive fallback write of `patch_loading=true` if the native write failed. |
+| First frame rendered | `markBootSuccess()`: clear `patch_loading` and `crash_count`. **Keep** `KEY_LAST_BOOTING_PID` so the next cold start can still query ExitInfo for this pid. Start the `verifyAfter` timer. |
+| Foreground time accumulates `verifyAfter` | Tear down the Dart-error-hook watch window. |
+| Dart error hook fires inside the window | Count one failure and queue a rollback on the next cold start. |
+| Next cold start `shouldLoadPatch` | On API 30+ with a known pid, query `getHistoricalProcessExitReasons` for the precise exit reason. Otherwise fall back to `patch_loading`. |
+| `crash_count >= maxCrashCount` | Delete the patch directory, add to the blacklist, fall back to the APK's built-in version. |
 
 ## Mapping `ApplicationExitInfo` (Android 11+)
 
-On Android 11+, the plugin uses `ApplicationExitInfo` to determine why the process exited.
+On Android 11+, `CrashGuard` looks up the previous session's exit reason and counts only the four crash-like categories:
 
 | reason | Counts as crash |
 |---|---|
 | `REASON_CRASH` | Yes |
 | `REASON_CRASH_NATIVE` | Yes |
 | `REASON_ANR` | Yes |
+| `REASON_INITIALIZATION_FAILURE` | Yes |
 | `REASON_USER_REQUESTED` | No |
 | `REASON_USER_STOPPED` | No |
 | `REASON_LOW_MEMORY` | No |
@@ -310,19 +300,17 @@ On Android 11+, the plugin uses `ApplicationExitInfo` to determine why the proce
 
 ## Dart-side blank-screen safety net
 
-A bad patch doesn't always crash the process.
-For example, a Dart-level `throw` caught by the framework leaves the process alive but the screen blank or unusable.
+A bad patch doesn't always crash the process. A Dart-level `throw` caught by the framework can leave the process alive but the screen blank or unusable.
 
-To handle that, `init()` installs:
+To handle that, `init()` installs **Flutter-level** error hooks during the `verifyAfter` window:
 
 - `PlatformDispatcher.instance.onError`
 - `FlutterError.onError`
 
-Within the `verifyAfter` window, either hook firing counts as a patch failure and queues a rollback on disk.
+Either firing inside the window counts as one patch failure and queues a rollback on disk.
 
-Because the current process has already loaded the patched `.so`, it cannot safely revert to the APK's built-in version without restarting.
-The actual recovery happens on the next cold start.
+> Note: the plugin does **not** install Android's `Thread.UncaughtExceptionHandler`. Native (JNI / `.so`) crashes are caught indirectly on the *next* cold start via `ApplicationExitInfo` (API 30+) or the `patch_loading` fallback (API < 30). Recovery is always cross-process; the current process has already loaded the patched `.so` and cannot revert without a restart.
 
-After the window closes, the hooks still forward transparently to any prior handler but stop reporting circuit-breaker events to the native side.
+After the window closes, both hooks still forward transparently to any prior handler but stop reporting circuit-breaker events to the native side.
 
 </details>

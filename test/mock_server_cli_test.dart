@@ -26,6 +26,7 @@ void main() {
           'version': '1.0.0-h1',
           'md5': crypto.md5.convert(bytes).toString(),
           'targetVersionCode': 100,
+          'payload': 'libapp.so',
         }),
       );
 
@@ -33,6 +34,7 @@ void main() {
       expect(patch.version, '1.0.0-h1');
       expect(patch.md5, crypto.md5.convert(bytes).toString());
       expect(patch.targetVersionCode, 100);
+      expect(patch.payload, 'libapp.so');
 
       final server = await mock_server.startMockPatchServer(
         mock_server.MockPatchServerConfig(
@@ -62,6 +64,53 @@ void main() {
         patchResponse.contentType?.mimeType,
         'application/octet-stream',
       );
+    });
+
+    test('dist mode serves manifest payload patch.zip', () async {
+      final temp = await Directory.systemTemp.createTemp(
+        'flutter_patcher_mock_zip_',
+      );
+      addTearDown(() async {
+        if (await temp.exists()) {
+          await temp.delete(recursive: true);
+        }
+      });
+
+      final dist = Directory('${temp.path}/dist')..createSync();
+      final bytes = utf8.encode('zip bytes');
+      await File('${dist.path}/patch.zip').writeAsBytes(bytes);
+      await File('${dist.path}/manifest.json').writeAsString(
+        jsonEncode({
+          'version': '1.0.0-h1',
+          'md5': crypto.md5.convert(bytes).toString(),
+          'targetVersionCode': 100,
+          'payload': 'patch.zip',
+        }),
+      );
+
+      final patch = await mock_server.loadMockPatch(dist: dist.path);
+      expect(patch.payload, 'patch.zip');
+
+      final server = await mock_server.startMockPatchServer(
+        mock_server.MockPatchServerConfig(
+          patch: patch,
+          host: '127.0.0.1',
+          port: 0,
+        ),
+      );
+      addTearDown(() => server.close(force: true));
+
+      final check = await _getJson('http://127.0.0.1:${server.port}/check');
+      final patchJson = check['patch'] as Map<String, dynamic>;
+      expect(
+        patchJson['patchUrl'],
+        'http://127.0.0.1:${server.port}/patch.zip',
+      );
+
+      final patchResponse = await _getBytes(
+        'http://127.0.0.1:${server.port}/patch.zip',
+      );
+      expect(patchResponse.bytes, bytes);
     });
 
     test('patch mode computes md5 and uses explicit metadata', () async {

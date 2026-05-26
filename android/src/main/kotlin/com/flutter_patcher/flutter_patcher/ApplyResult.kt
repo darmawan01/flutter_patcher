@@ -45,6 +45,8 @@ internal object ApplyErrorCode {
     const val NETWORK = "NETWORK"
     const val MD5_MISMATCH = "MD5_MISMATCH"
     const val SIGNATURE_INVALID = "SIGNATURE_INVALID"
+    const val UNSUPPORTED_ABI = "UNSUPPORTED_ABI"
+    const val ASSET_PACKAGE_INVALID = "ASSET_PACKAGE_INVALID"
     const val IO_ERROR = "IO_ERROR"
     const val UNKNOWN = "UNKNOWN"
 }

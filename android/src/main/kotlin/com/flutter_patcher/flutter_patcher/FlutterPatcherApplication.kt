@@ -94,7 +94,7 @@ open class FlutterPatcherApplication : FlutterApplication() {
                     return false
                 }
 
-                val path = patchManager.getValidPatchPath { status, version, extras ->
+                val patch = patchManager.getValidPatch { status, version, extras ->
                     // md5 / signature 失败 = 强烈"补丁有问题"信号，连带入黑名单。
                     // meta_corrupted / version_code_mismatch 不入黑名单（前者 key 不全，后者
                     // 属于正常 APK 升级而非补丁本身有问题）。
@@ -120,7 +120,7 @@ open class FlutterPatcherApplication : FlutterApplication() {
                     )
                     diagRecorded = true
                 }
-                if (path == null) {
+                if (patch == null) {
                     Log.d(TAG, "no usable patch, boot with built-in libapp.so")
                     if (!diagRecorded) {
                         // DROPPED_* 是用户最关心的"上次为啥被丢弃"信息，不应被这次
@@ -153,7 +153,13 @@ open class FlutterPatcherApplication : FlutterApplication() {
                 guard.markBooting()
 
                 val attemptedFields = mutableListOf<String>()
-                val ok = LoaderHook.install(context, path, attemptedFields)
+                val ok = LoaderHook.install(
+                    context,
+                    patch.soPath,
+                    patch.assetsBundlePath,
+                    patch.assetsArchivePath,
+                    attemptedFields
+                )
                 if (ok) {
                     BootDiagnosticStore.record(
                         context = context,
@@ -190,6 +196,6 @@ open class FlutterPatcherApplication : FlutterApplication() {
 
     override fun attachBaseContext(base: Context) {
         super.attachBaseContext(base)
-        attachPatcher(base)
+        attachPatcher(this)
     }
 }

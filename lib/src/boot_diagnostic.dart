@@ -1,44 +1,41 @@
 import 'package:flutter/foundation.dart';
 
-/// 上次冷启动时补丁的加载结果分类。
+/// Last cold-start patch loading decision.
 ///
-/// `applyPatch` 返回的 [PatchApplyError] 只覆盖"装的时候"失败。补丁装上之后，
-/// 下次冷启动可能因 versionCode 不匹配、签名失败、熔断器触发、反射注入失败
-/// 等原因被原生侧丢弃 —— 这些事件**仅写 logcat**，业务侧拿不到。
-///
-/// 本枚举与原生侧 `BootDiagnosticStore` 的字符串常量一一对应，结构化暴露给
-/// Dart 业务做监控上报、用户提示。
+/// Apply-time failures are reported by `PatchApplyError`. After a patch is
+/// installed, the next cold start can still drop it because of version mismatch,
+/// md5/signature failure, crash rollback, or loader hook failure. This enum
+/// exposes those native decisions to Dart for monitoring.
 enum PatchBootStatus {
-  /// 当前未安装补丁，使用 APK 内置 libapp.so。属于正常状态。
+  /// No local patch is installed or loaded.
   noPatch,
 
-  /// 补丁加载成功，本次启动按补丁运行。
+  /// This cold start loaded the patch.
   patched,
 
-  /// 补丁被丢弃：targetVersionCode 与当前 APK versionCode 不匹配。
-  /// 典型原因：用户更新了 APK，旧补丁不再适用。**最常见**，通常无需告警。
+  /// The patch target versionCode does not match the installed APK.
   droppedVersionCodeMismatch,
 
-  /// 补丁被丢弃：本地 .so 文件 md5 与 meta.effectiveMd5 不一致。
-  /// 典型原因：磁盘损坏、外部进程篡改。
+  /// Cold-start validation found that local `libapp_patch.so` no longer
+  /// matches metadata.
   droppedMd5Mismatch,
 
-  /// 补丁被丢弃：Ed25519 签名校验失败 / 严格模式下 API < 33。
-  /// **可能被篡改**，建议告警。
+  /// Cold-start signature validation failed.
   droppedSignatureInvalid,
 
-  /// 补丁被丢弃：meta.json 损坏或缺关键字段（effectiveMd5 等）。
+  /// Metadata or required patch artifacts are missing or corrupt.
+  ///
+  /// For asset patches this can include missing `flutter_assets/`,
+  /// `AssetManifest.bin`, or `flutter_assets.apk`.
   droppedMetaCorrupted,
 
-  /// 补丁被丢弃：连续启动失败累计 >= maxCrashCount，熔断器触发。
-  /// 典型原因：补丁本身有 bug 导致首帧前崩溃。**强告警**，应回滚版本定位崩溃。
+  /// Crash protection tripped after consecutive early boot failures.
   droppedCircuitBreaker,
 
-  /// 补丁文件保留，但反射替换 FlutterLoader 失败，本次启动用了内置 .so。
-  /// 典型原因：Flutter 大版本升级后字段名变更，需要传 loaderFieldCandidates。
+  /// Loader injection failed; this launch used the APK built-in version.
   hookInstallFailed,
 
-  /// attachPatcher 阶段抛出未分类异常。
+  /// Unclassified startup failure.
   unknown,
 }
 
@@ -65,47 +62,33 @@ PatchBootStatus _parseStatus(String? raw) {
   }
 }
 
-/// 上次冷启动补丁加载诊断的结构化结果。
-///
-/// 用法：
-/// ```dart
-/// final diag = await FlutterPatcher.lastBootDiagnostic;
-/// if (diag != null && !diag.isHealthy) {
-///   analytics.report('patch_dropped', {
-///     'status': diag.status.name,
-///     'patch_version': diag.patchVersion,
-///     'patch_vc': diag.patchTargetVersionCode,
-///     'app_vc': diag.appVersionCode,
-///     'crash_count': diag.crashCount,
-///   });
-/// }
-/// ```
+/// Structured diagnostic for the last cold-start patch decision.
 @immutable
 class PatchBootDiagnostic {
-  /// 上次冷启动的加载结果分类。
+  /// Cold-start patch loading result.
   final PatchBootStatus status;
 
-  /// 涉及的补丁版本。被丢弃时是被丢弃的版本，patched 时是当前生效的版本。
-  /// 部分场景（meta 损坏、circuit 熔断）可能为 null。
+  /// Patch version involved in the decision.
+  ///
+  /// For dropped patches this is the dropped version when metadata is readable.
   final String? patchVersion;
 
-  /// versionCode mismatch 专用：补丁声明的 targetVersionCode。
+  /// Patch target versionCode, mainly used for version mismatch diagnostics.
   final int? patchTargetVersionCode;
 
-  /// 当前宿主 APK 的 versionCode。
+  /// Current host APK versionCode.
   final int? appVersionCode;
 
-  /// 熔断器触发时：触发时的累计崩溃次数（删除前的真实值）。
+  /// Crash count when the circuit breaker tripped.
   final int? crashCount;
 
-  /// hookInstallFailed 专用：尝试过的 FlutterInjector 字段候选名。
-  /// 用于定位 Flutter 升级后字段改名的问题。
+  /// FlutterInjector loader field candidates attempted when hook install failed.
   final List<String>? attemptedLoaderFields;
 
-  /// 这条诊断对应的"上次冷启动"时间。
+  /// Time when this diagnostic was recorded.
   final DateTime recordedAt;
 
-  /// 给开发者看的描述。可能为 null。**不要直接展示给最终用户。**
+  /// Developer-facing diagnostic message. Do not show directly to end users.
   final String? message;
 
   const PatchBootDiagnostic({
@@ -119,13 +102,11 @@ class PatchBootDiagnostic {
     this.message,
   });
 
-  /// `true` 表示上次启动是预期内的健康状态（patched 或 noPatch）。
-  /// 业务侧通常只需关心 `false` 的情况。
+  /// Whether the last boot state is normal for business monitoring.
   bool get isHealthy =>
-      status == PatchBootStatus.patched ||
-      status == PatchBootStatus.noPatch;
+      status == PatchBootStatus.patched || status == PatchBootStatus.noPatch;
 
-  /// 从原生 MethodChannel 返回的 Map 反序列化。非预期结构归到 [PatchBootStatus.unknown]。
+  /// Deserializes the native MethodChannel map.
   factory PatchBootDiagnostic.fromNative(Map<dynamic, dynamic> raw) {
     final map = Map<String, dynamic>.from(raw);
     final fields = map['attemptedLoaderFields'];

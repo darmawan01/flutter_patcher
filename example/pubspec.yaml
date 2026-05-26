@@ -30,8 +30,6 @@ dependencies:
   cupertino_icons: ^1.0.8
 
 dev_dependencies:
-  integration_test:
-    sdk: flutter
   flutter_test:
     sdk: flutter
 
@@ -56,10 +54,9 @@ flutter:
   # the material Icons class.
   uses-material-design: true
 
-  # Demo 用："红按钮"版本的 libapp.so 预先 cp 到这里（pack 出来的 dist/libapp_patched.so
-  # → assets/libapp_preload.so），由 example main.dart 读取并应用，用于演示补丁。
   assets:
-    - assets/libapp_preload.so
+    - assets/asset_patch_preload.zip
+    - assets/patch_demo.png
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

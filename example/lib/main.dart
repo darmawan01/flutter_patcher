@@ -5,11 +5,10 @@ import 'package:flutter_patcher/flutter_patcher.dart';
 import 'diag_card.dart';
 import 'log_panel.dart';
 
-/// flutter_patcher 最小演示：
-///  - "Apply patch"：从 APK 内置 asset 读红色 libapp.so，装成热更补丁
-///  - 冷启动 app → 按钮变红（补丁生效）
-///  - "Rollback" + 冷启动 → 回到蓝色（APK 内置版本）
-void main() async {
+const _demoImage = 'assets/patch_demo.png';
+const _bundledAssetPatch = 'assets/asset_patch_preload.zip';
+
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await FlutterPatcher.init();
   runApp(const MyApp());
@@ -21,7 +20,6 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) => MaterialApp(
     title: 'flutter_patcher example',
-    // APK 内置的 .so 是蓝色主题，补丁包里的 .so 是红色主题，切换补丁就能看到颜色变化
     theme: ThemeData(
       colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
       useMaterial3: true,
@@ -32,6 +30,7 @@ class MyApp extends StatelessWidget {
 
 class Demo extends StatefulWidget {
   const Demo({super.key});
+
   @override
   State<Demo> createState() => _DemoState();
 }
@@ -39,44 +38,76 @@ class Demo extends StatefulWidget {
 class _DemoState extends State<Demo> {
   final _log = LogController();
 
-  /// 读 APK 内置的 libapp_preload.so → 交给 applyPatchBytes 落盘。
-  /// 下次冷启动 Flutter Engine 会用这份 .so 代替 APK 内置的版本。
-  Future<void> _apply() async {
-    _log.log('loading bundled asset...');
+  Future<void> _applyBundledAssetPatch() async {
+    _log.log('loading bundled patch.zip...');
     final bytes = (await rootBundle.load(
-      'assets/libapp_preload.so',
+      _bundledAssetPatch,
     )).buffer.asUint8List();
+
     final result = await FlutterPatcher.applyPatchBytes(
       bytes,
-      version: 'bundled-1',
+      version: 'asset-demo-1',
       onProgress: (p) => _log.log('  [${p.phase.name}]'),
     );
+
     _log.log(
       result.ok
-          ? '✅ APPLIED — force-stop the app and reopen to see the new theme'
-          : '❌ failed: ${result.error?.name} / ${result.message}',
+          ? 'APPLIED: force-stop and reopen to see the image replacement'
+          : 'failed: ${result.error?.name} / ${result.message}',
     );
     DiagCard.refresh();
   }
 
   Future<void> _rollback() async {
     await FlutterPatcher.rollback();
-    _log.log('🔄 ROLLED BACK — force-stop the app and reopen to revert');
+    _log.log('ROLLED BACK: force-stop and reopen to restore the APK image');
     DiagCard.refresh();
   }
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('flutter_patcher example (BASE)')),
+    appBar: AppBar(title: const Text('flutter_patcher example')),
     body: SafeArea(
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                SizedBox(
+                  width: 96,
+                  height: 54,
+                  child: Image.asset(_demoImage, fit: BoxFit.contain),
+                ),
+                const SizedBox(width: 12),
+                const Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        'asset key',
+                        style: TextStyle(fontSize: 11, color: Colors.grey),
+                      ),
+                      SizedBox(height: 2),
+                      Text(
+                        _demoImage,
+                        style: TextStyle(fontFamily: 'monospace', fontSize: 12),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
             const DiagCard(),
             const SizedBox(height: 12),
-            FilledButton(onPressed: _apply, child: const Text('Apply patch')),
+            FilledButton(
+              onPressed: _applyBundledAssetPatch,
+              child: const Text('Apply patch'),
+            ),
             const SizedBox(height: 8),
             OutlinedButton(onPressed: _rollback, child: const Text('Rollback')),
             const SizedBox(height: 16),

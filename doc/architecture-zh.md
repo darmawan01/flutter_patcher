@@ -27,11 +27,11 @@
 ```text
   开发机                      服务端                       用户设备
 ─────────────              ─────────────              ─────────────
- 修改 Dart 代码               存储 + 分发                  下载 + 校验
+ 修改 Dart / 资源              存储 + 分发                  下载 + 校验
       │                          │                           │
- flutter build apk             上传补丁                   applyPatch()
-      │                    libapp.so + manifest              │
- pack 提取补丁                      │                    写入本地
+ flutter build apk             上传载荷                   applyPatch()
+      │                 libapp.so 或 patch.zip                │
+ pack 提取载荷                      │                    原子落盘
       │                          │                           │
       └──────────────→     CDN / 对象存储      ───────────→   下次冷启动加载
                                                              │
@@ -39,16 +39,7 @@
                                                        失败 → 自动回滚
 ```
 
-基本流程如下：
-
-1. 修改 Dart 代码后重新构建 release APK。
-2. 使用 `flutter_patcher:pack` 从 APK 中提取补丁文件和元数据。
-3. 将补丁文件上传到 CDN 或对象存储。
-4. 客户端检查更新，下载并校验补丁。
-5. 补丁落盘后，在下一次冷启动时生效。
-
-补丁不会在当前进程内立即替换代码。  
-如果需要提醒用户重启，可以在 `applyPatch` 成功后展示提示。
+载荷既可以是裸 `libapp.so`（legacy 纯代码），也可以是 v2 `patch.zip`（同时携带 `libapp.so` 与 Flutter 资源覆盖）—— 由 `manifest.json` 的 `payload` 字段声明，插件自动识别并分发。补丁不会在当前进程内立即替换代码，下次冷启动时才生效。
 
 ---
 
@@ -57,19 +48,21 @@
 用户设备上，补丁会经历以下生命周期：
 
 ```text
-下载补丁
+下载载荷（libapp.so 或 patch.zip）
   ↓
-按需校验 MD5 / 签名，然后校验 versionCode
+解析 meta → 校验 versionCode → 校验有效 MD5 → 校验签名（如下发）
   ↓
-写入本地补丁目录
+原子落盘：staging/ → pending/ → 切换为 current/
   ↓
 等待下次冷启动
   ↓
-冷启动时加载补丁 libapp.so
+冷启动加载补丁 libapp.so（如带资源则同时使用合并后的 AssetManifest.bin）
   ↓
 启动成功：继续使用补丁
 启动失败：自动回滚
 ```
+
+校验顺序（见 [PatchManager.kt:169-290](../android/src/main/kotlin/com/flutter_patcher/flutter_patcher/PatchManager.kt#L169-L290)）：meta 解析 → `versionCode` 匹配 → effective MD5 → Ed25519 签名。签名只在 `md5` 存在时才校验（签名的明文就是 md5 十六进制串）。
 
 冷启动时，插件会先检查补丁是否仍然适用于当前 APK，再进行加载。  
 如果补丁无效、损坏、版本不匹配，或命中本地黑名单，插件会丢弃该补丁并回到 APK 内置版本。
@@ -114,6 +107,80 @@ dart run flutter_patcher:pack \
 
 生产环境仍建议配合服务端监控和灰度发布。  
 完整机制见 [Crash protection](crash-protection-zh.md)。
+
+---
+
+### 载荷 v2（`patch.zip`）
+
+自 0.1.3 起，`PatchInfo.patchUrl` 既可以指向裸 `libapp.so`（legacy，`schemaVersion: 1`），也可以指向 v2 `patch.zip`（`schemaVersion: 2`）。外层 `manifest.json` 通过 `payload` 字段声明类型，插件自动识别并分发。
+
+`patch.zip` 内部结构：
+
+```text
+manifest.json          # schemaVersion 2；libapp.so 与每个覆盖文件的逐文件 MD5
+manifest_patch.json    # AssetManifest.bin 差量（operations: 按 key 进行 upsert）
+lib/<abi>/libapp.so    # 补丁后的 Dart 代码（总是存在）
+assets/<asset-key>     # 每个 key 一条（含分辨率变体）
+```
+
+运行时把 ZIP 解到私有目录，校验逐文件 MD5，把 `manifest_patch.json` 合并进基准 `AssetManifest.bin`，再写入补丁的私有资源目录。完整 schema 与校验规则见 [API 参考 → 资源补丁](api-reference-zh.md#资源补丁)。
+
+---
+
+### 原子安装
+
+补丁安装是崩溃安全的。落盘状态机（见 [PatchManager.kt:622-767](../android/src/main/kotlin/com/flutter_patcher/flutter_patcher/PatchManager.kt#L622-L767)）：
+
+```text
+staging/   ← 下载并校验
+   ↓ rename
+pending/   ← 已提升，下次冷启动加载这一份
+   ↓ 首次启动成功后
+current/   ← 激活；上一份（如有）位于 previous/
+   ↓ 下一次安装时
+previous/  ← 异步回收
+```
+
+掉电或进程被杀可能留下半安装目录；下次启动时 `recoverInterruptedInstall`（[PatchManager.kt:1146-1172](../android/src/main/kotlin/com/flutter_patcher/flutter_patcher/PatchManager.kt#L1146-L1172)）会自动协调：要么续装，要么丢弃。
+
+---
+
+### AssetManifest.bin 合并
+
+补丁带资源覆盖时，插件需要在不重打 APK 的前提下让 Flutter 知道新字节的位置。流程：
+
+1. 用 `StandardMessageCodec` 解码 APK 内的基准 `AssetManifest.bin`（[PatchManager.kt:901-983](../android/src/main/kotlin/com/flutter_patcher/flutter_patcher/PatchManager.kt#L901-L983)）。
+2. 应用 `manifest_patch.json` 里的每条 `upsert`（按 key 替换或插入 variants 列表）。
+3. 重新编码并写入补丁的私有资源目录。
+4. 启动时 [`LoaderHook`](../android/src/main/kotlin/com/flutter_patcher/flutter_patcher/LoaderHook.kt) 安装自定义 `FlutterLoader` + `FlutterJNI` AssetManager，把 Flutter 的资源读取重定向到补丁目录；未被补丁覆盖的 key 仍走 APK 内的 fallback。
+
+`Image.asset(...)`、`rootBundle.load(...)` 以及字体查找都会自动走重定向后的 bundle —— 业务代码无需改动。
+
+---
+
+### 下载重试策略
+
+下载失败时，运行时最多重试 **3 次**，指数退避约 2s / 4s / 8s（见 [PatchManager.kt:355-405](../android/src/main/kotlin/com/flutter_patcher/flutter_patcher/PatchManager.kt#L355-L405)）。最终失败时 apply 结果是 `network`。服务端可以依赖这一行为，不再额外加客户端重试层；若需要自定义抖动或上下限，可以在 `applyPatch` 外面再包一层退避循环。
+
+---
+
+### ABI 回退
+
+`libapp.so` 不跨 ABI 通用。pack CLI 的 `--abi` 控制补丁里携带哪一个：
+
+* legacy 裸 `.so` 载荷每包一个 ABI；服务端按 `deviceAbi` 选 URL。
+* v2 `patch.zip` 也只携带 **一个** `lib/<abi>/libapp.so`。插件按 `Build.SUPPORTED_ABIS` 的优先级读取，并接受第一个匹配项；不匹配时返回 `unsupportedAbi`。
+
+设备端不做 ABI 之间的自动 fallback —— 选择正确的 artifact 是服务端的责任。
+
+---
+
+### `file://` URL 支持
+
+`PatchInfo.patchUrl` 除了 `http(s)://` 之外，还支持 `file://` 协议。插件直接读本地文件（不走网络），按照远程载荷的完整流程校验 MD5 / 签名后落盘。这支持两种典型场景：
+
+* **预置补丁** —— 把 `patch.zip` 打进 `assets/`，先 copy 到 cache 目录，再用 `file://` URL 调用 `applyPatch`。example 工程用 `applyPatchBytes` 演示了等价做法（连 copy 都省掉）。
+* **本地 mock-server 联调** —— 把 `patchUrl` 指向 `file://` 即可绕过 HTTP；单测和离线 CI 都用得上。
 
 ---
 
@@ -164,6 +231,8 @@ GET /api/patch/check?app_version_code=100&abi=arm64-v8a&current_patch=1.0.0-h1
   "target_version_code": 100
 }
 ```
+
+字段名同时支持 `snake_case`（上面示例）和 `camelCase`（`patchUrl`、`targetVersionCode`、`hasUpdate`）。服务端可以保留自己的命名风格 —— 参见 [PatchInfo.fromJson](../lib/src/patch_info.dart#L58)。
 
 如果启用签名校验，可以额外下发 `signature`：
 
@@ -303,44 +372,10 @@ PatchInfo(version: 'fix-1', patchUrl: 'https://...', targetVersionCode: 100);
 
 ### 推荐的后端实践
 
-#### 1. 灰度发布
-
-建议按比例逐步放量：
-
-```text
-1% → 5% → 20% → 50% → 100%
-```
-
-每个阶段观察崩溃率、启动失败率和关键业务指标，再继续扩大范围。
-
-#### 2. 崩溃上报联动
-
-客户端应上报 `lastBootDiagnostic` 中的异常状态。  
-其中，补丁自动回滚和熔断相关事件的具体含义见 [Crash protection](crash-protection-zh.md)。
-
-如果同一补丁在短时间内多次触发回滚，服务端应自动停止下发。
-
-#### 3. 紧急下架
-
-紧急下架不需要删除用户本地补丁。
-
-只要服务端停止在 check-update 接口中返回该补丁，新用户就不会继续下载。  
-已经触发崩溃保护的设备，会在本地回滚并拒绝再次加载同一个问题补丁。
-
-#### 4. 保留补丁发布记录
-
-建议服务端记录每个补丁的：
-
-- 补丁版本
-- 目标 APK `versionCode`
-- ABI
-- MD5（如有下发）
-- 签名（如有下发）
-- 发布时间
-- 灰度比例
-- 当前状态：灰度中、全量、已下架
-
-这些信息有助于排查线上问题。
+- **灰度发布。** 典型放量节奏 `1% → 5% → 20% → 50% → 100%`；每个阶段观察崩溃率、启动失败率与关键业务指标后再继续。
+- **打通 `lastBootDiagnostic` 上报。** 上报异常状态（见 [Crash protection](crash-protection-zh.md)）；若同一补丁短时间内多次触发回滚，服务端应自动停止下发。
+- **紧急下架走服务端。** 在 check-update 接口里停下该补丁即可 —— 新用户不再下载，已触发崩溃保护的设备会本地回滚并拒绝再次加载。不需要远程删除指令。
+- **保留发布记录。** 每个补丁记录：`version`、`targetVersionCode`、ABI、MD5 / 签名（如下发）、发布时间、灰度比例、生命周期状态（灰度中 / 全量 / 已下架）。线上排障靠的就是这些。
 
 ---
 
@@ -441,12 +476,4 @@ APK 升级后，旧补丁会自动失效。
 
 ### 应用商店政策与合规风险
 
-动态下发可执行代码在部分应用商店或业务类目中可能存在限制。
-
-接入前请评估目标市场和应用场景，尤其是：
-
-- 面向未成年人的应用
-- 金融、医疗、政务等强监管场景
-- 对代码动态更新有明确限制的应用商店
-
-`flutter_patcher` 提供技术能力，但不替代你的合规评估。
+动态下发可执行代码在部分应用商店和强监管类目（金融、医疗、政务、面向未成年人的应用等）中受限。README TL;DR 已覆盖基本原则；插件只提供技术能力，不替代你自己的合规评估。

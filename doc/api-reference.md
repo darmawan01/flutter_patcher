@@ -180,6 +180,8 @@ Re-applying the same patch is safe; if it is already installed, the call returns
 | `network` | Download failed | Retry later |
 | `md5Mismatch` | Downloaded MD5 does not match (only triggered when md5 is provided) | Check CDN / server-side md5 |
 | `signatureInvalid` | Signature verification failed | Treat as a security event; do not retry |
+| `unsupportedAbi` | The `patch.zip` has no `libapp.so` for the device's ABI | Ship per-ABI patches or filter server-side |
+| `assetPackageInvalid` | Asset overlay malformed: bad schema, unsafe zip path, missing `AssetManifest.bin`, unsupported op | Re-pack with the current `pack` CLI; see [Asset Patching](#asset-patching) |
 | `ioError` | Disk write, rename, or permission failure | Retry later |
 | `unknown` | Unclassified error | Inspect `result.message` |
 
@@ -388,7 +390,7 @@ try {
 
 ## pack CLI
 
-`flutter_patcher:pack` extracts `libapp.so` from a release APK and emits the patch metadata.
+`flutter_patcher:pack` extracts `libapp.so` (and, optionally, Flutter asset overlays) from a release APK and emits the patch metadata.
 
 ```bash
 dart run flutter_patcher:pack \
@@ -403,6 +405,7 @@ dart run flutter_patcher:pack \
 | `--version <string>` | Required. Patch identifier. |
 | `--target-version-code <int>` | Required. Host APK `versionCode` the patch targets. |
 | `--abi <string>` | Optional. Defaults to the first match among `arm64-v8a`, `armeabi-v7a`, `x86_64`. |
+| `--assets <KEY[,KEY...]>` | Optional. Comma-separated Flutter asset keys to overlay. Use `@path/to/list.txt` to read keys from a UTF-8 file (one per line, `#` starts a comment). Inline keys and `@file` references can be mixed, e.g. `--assets @list.txt,assets/extra.png`. See [Asset Patching](#asset-patching). |
 | `--out <dir>` | Optional. Output directory; defaults to `dist/`. |
 
 `--target-version-code` binds the patch to a specific base APK already installed on the user's device. For example:
@@ -414,15 +417,121 @@ dart run flutter_patcher:pack \
 If the APK is upgraded to a new `versionCode`, old patches expire automatically.
 If multiple `versionCode`s are live at the same time, build and ship a separate patch per base.
 
-Output:
+Output (always `schemaVersion: 2`, `payload: patch.zip`):
 
 ```text
 dist/
-├── libapp.so
+├── patch.zip
 └── manifest.json
 ```
 
-Upload `libapp.so` and `manifest.json` to your CDN, then return them from your update endpoint.
+Upload both files to your CDN and return `manifest.json` from your update endpoint. The plugin reads `manifest.payload` and downloads `patch.zip`. A `patch.zip` packed without `--assets` contains only `manifest.json` + `lib/<abi>/libapp.so` (the inner manifest omits the `assets` block); with `--assets` it additionally embeds `manifest_patch.json` and per-key overlay files. See [Asset Patching](#asset-patching).
+
+---
+
+## Asset Patching
+
+Since 0.1.3, Flutter assets (images, fonts, JSON, etc.) can be hot-patched together with Dart code via the v2 `patch.zip` payload. Call sites don't change — `Image.asset('assets/hero.png')` and `rootBundle.load('assets/strings/zh.json')` keep working; the patch overlays new bytes under the same keys on the next cold start.
+
+### Workflow
+
+1. Rebuild a release APK with the changed assets (and any Dart code that references them) declared in `pubspec.yaml`.
+2. Pack with `--assets` listing the asset keys to overlay:
+
+   ```bash
+   dart run flutter_patcher:pack \
+     --apk path/to/patched-release.apk \
+     --version 1.0.1 \
+     --target-version-code 2 \
+     --assets assets/hero.png,assets/strings/zh.json
+   ```
+
+   For long key lists, point `--assets` at a text file with `@` (one key per line, `#` for comments). Inline keys and `@file` can be mixed in the same flag:
+
+   ```bash
+   dart run flutter_patcher:pack \
+     --apk path/to/patched-release.apk \
+     --version 1.0.1 \
+     --target-version-code 2 \
+     --assets @patch-assets.txt,assets/last-minute.png
+   ```
+
+3. Serve `dist/manifest.json` + `dist/patch.zip` from your CDN / update endpoint.
+
+### Payload layout (`patch.zip`, v2)
+
+```text
+manifest.json          # outer manifest, schemaVersion 2
+manifest_patch.json    # AssetManifest.bin delta operations
+lib/<abi>/libapp.so    # patched Dart code (still required even if only assets changed)
+assets/<asset-key>     # overlay bytes, one entry per requested key (and per resolution variant)
+```
+
+The outer `manifest.json` (read by `mock_server` and the plugin) carries `schemaVersion`, `version`, `targetVersionCode`, `abi`, `payload: patch.zip`, and the package-payload MD5. The inner `manifest.json` (inside the ZIP) lists per-file MD5s for `libapp.so` and every overlay file.
+
+### `manifest_patch.json` schema
+
+```json
+{
+  "schemaVersion": 1,
+  "manifestFormat": "bin",
+  "baseManifestSize": 322,
+  "operations": [
+    {
+      "op": "upsert",
+      "key": "assets/hero.png",
+      "variants": [
+        { "asset": "assets/hero.png" },
+        { "asset": "assets/2.0x/hero.png" }
+      ]
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `op` | Currently only `upsert` is supported. |
+| `key` | Flutter asset key as registered in `pubspec.yaml`. |
+| `variants` | Resolution-aware variants (`1.0x`, `2.0x`, etc.) auto-discovered from the patched APK's `AssetManifest.bin`. |
+
+On device, the plugin decodes the baseline `AssetManifest.bin` using `StandardMessageCodec`, applies each `upsert`, and writes the merged manifest into the patch's private asset directory. Flutter's `AssetBundle` is then redirected to this private directory by [`LoaderHook`](https://github.com/anthropics/flutter_patcher/blob/main/android/src/main/kotlin/com/flutter_patcher/flutter_patcher/LoaderHook.kt).
+
+### Asset key requirements
+
+* Every key passed to `--assets` must already be declared in the patched APK's `pubspec.yaml` (the packer reads `AssetManifest.bin` to discover variants — keys absent from the manifest produce an error).
+* You can add brand-new assets via a patch as long as you declare them in `pubspec.yaml`, ship a new release APK that contains them, and then pack against that APK.
+* The on-device asset bundle resolves variants the standard Flutter way; you don't need to enumerate every `2.0x/`, `3.0x/`, etc. — the packer expands them from the manifest.
+
+### ABI handling
+
+A single `patch.zip` carries `libapp.so` for **one** ABI. The plugin rejects mismatches with `unsupportedAbi`. Either:
+
+* pack one ZIP per ABI (`--abi arm64-v8a`, `--abi armeabi-v7a`, ...) and route by `deviceAbi` server-side, or
+* if your app ships only `arm64-v8a` and `armeabi-v7a`, accept the small per-ABI distribution cost.
+
+### Validation errors
+
+The plugin returns `assetPackageInvalid` when the ZIP fails any of these checks:
+
+* `schemaVersion` unknown
+* Unsupported asset `mode` (only `overlay` is recognized)
+* Unsafe zip path (absolute, contains `..`, or NUL byte)
+* Missing `AssetManifest.bin` in the baseline `flutter_assets`
+* Overlay file referenced by `manifest_patch.json` missing from the ZIP
+* Per-file MD5 mismatch between `manifest.json` (inner) and the actual bytes
+
+### Security
+
+The outer MD5 / signature in the server's update response cover the whole `patch.zip`. Inner per-file MD5s are integrity checks during extraction, not a separate security surface — keep the outer signature mandatory in production.
+
+### What the runtime does on cold start
+
+1. Validate outer MD5 (and signature, if `PatchInfo.signature` is set).
+2. Open `patch.zip`, validate `schemaVersion` and inner `manifest.json` MD5s.
+3. Promote the unpacked tree from `staging/` → `pending/` atomically (see [Architecture → Atomic install](architecture.md#atomic-install)).
+4. Merge `manifest_patch.json` into the baseline `AssetManifest.bin`.
+5. Mark the patch ready; on the next process boot, `LoaderHook` redirects the AssetBundle to the patched directory and `FlutterLoader` loads the patched `libapp.so`.
 
 ---
 

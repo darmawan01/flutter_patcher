@@ -102,28 +102,28 @@ Android 不同版本对进程退出原因的识别能力不同。
 
 ### Android 11+（API 30+）
 
-Android 11+ 支持 `ApplicationExitInfo`，可以更准确地区分：
+Android 11+ 支持 `ActivityManager.getHistoricalProcessExitReasons`，`CrashGuard` 可以更准确地区分：
 
-- 真实 crash
-- native crash
-- ANR
-- 用户主动关闭
-- 系统低内存回收
+- 真实 Dart / framework crash（`REASON_CRASH`）
+- native crash（`REASON_CRASH_NATIVE`）
+- ANR（`REASON_ANR`）
+- 初始化失败（`REASON_INITIALIZATION_FAILURE`）—— JNI / loader 等 Dart 代码运行前的错误
+- 用户主动关闭、低内存回收、外部 SIGKILL（不计入熔断）
 
-因此，Android 11+ 上的误判风险较低，首帧前后的崩溃也更容易被识别。
+查询上一次会话的关键是 **`attachBaseContext` 阶段记下的 pid**，`CrashGuard` 即使在启动成功之后也会刻意保留它（`KEY_LAST_BOOTING_PID`）。靠这个 pid，下一次冷启动才能把 *首帧之后* 的 native crash 归因到补丁 —— 否则只能抓首帧前、`patch_loading` 还没清掉的情况。
 
 ### Android 10 及以下
 
 Android 10 及以下没有 `ApplicationExitInfo`。  
-插件只能依赖本地启动状态来判断“上次是否在补丁加载过程中异常中断”。
+`CrashGuard` 退化到 SharedPreferences 里的 `patch_loading` 标志，用来判断"上次是否在补丁加载过程中异常中断"。
 
 这意味着：
 
-- 首帧渲染前死亡的启动失败通常可以识别
-- 首帧渲染后的 native crash / ANR 可能无法被插件归因到补丁
+- 首帧渲染前死亡的启动失败可以识别（`patch_loading` 仍是 `true`）
+- **已知盲区：** 首帧之后发生的 native crash / ANR 无法归因 —— `patch_loading` 已被 `markBootSuccess` 清掉。Dart 层异常仍由错误钩子兜底。
 - `verifyAfter` 窗口内的 Dart 层异常仍然可以被错误钩子捕获
 
-如果你的业务需要覆盖这类低版本盲区，建议结合原有崩溃监控系统，在服务端侧及时停止下发问题补丁。
+如果 API < 30 的流量占比较高，建议结合原有崩溃监控系统，在服务端侧及时停止下发问题补丁。
 
 ---
 
@@ -198,20 +198,7 @@ await FlutterPatcher.init(
 
 ### 1. 上报启动诊断
 
-每次冷启动后，可以读取 `lastBootDiagnostic` 并上报：
-
-```dart
-final diag = await FlutterPatcher.lastBootDiagnostic;
-
-if (diag != null && !diag.isHealthy) {
-  analytics.report('patch_dropped', {
-    'status': diag.status.name,
-    'patch_version': diag.patchVersion,
-    'crash_count': diag.crashCount,
-    'message': diag.message,
-  });
-}
-```
+每次冷启动后，读取 `lastBootDiagnostic` 并把非健康状态上报到你的分析后端即可。API 和字段含义见 [API 参考 → 启动诊断](api-reference-zh.md#启动诊断)。
 
 重点关注以下状态：
 
@@ -284,25 +271,28 @@ adb logcat | grep FlutterPatcher/Guard
 
 ## 熔断器时序
 
+状态机位于 [`CrashGuard.kt`](../android/src/main/kotlin/com/flutter_patcher/flutter_patcher/CrashGuard.kt)（不在 `FlutterPatcherApplication` 中）。状态键由 SharedPreferences 持久化：`KEY_PATCH_LOADING`、`KEY_CRASH_COUNT`、`KEY_LAST_BOOTING_PID`。
+
 | 时机 | 行为 |
 |---|---|
-| `Application.attachBaseContext` | 写入 `patch_loading=true` 和当前 pid，用于下次冷启动判断 |
-| Dart `FlutterPatcher.init()` | 再写一次 `patch_loading=true`，作为 native 写入失败时的兜底 |
-| 首帧渲染 | 调用 `markBootSuccess`，清除 `patch_loading` 和 `crash_count`，并启动 `verifyAfter` 计时 |
-| 前台累计存活 `verifyAfter` | 关闭 Dart 错误钩子的熔断窗口 |
-| Dart 错误钩子触发 | 在窗口期内计入一次失败，并准备回滚 |
-| 下次冷启动 `shouldLoadPatch` | 判断上次启动是否失败，并决定是否加载补丁 |
-| `crash_count >= maxCrashCount` | 删除补丁文件，写入黑名单，回退 APK 内置版本 |
+| `Application.attachBaseContext` | `markBooting()`：同步 `commit()` 写入 `patch_loading=true` 和当前 pid |
+| Dart `FlutterPatcher.init()` | 当 native 写入失败时，做一次兜底写 `patch_loading=true` |
+| 首帧渲染 | `markBootSuccess()`：清 `patch_loading` 与 `crash_count`。**保留** `KEY_LAST_BOOTING_PID`，下次冷启动仍能据此查询 ExitInfo。启动 `verifyAfter` 计时 |
+| 前台累计存活 `verifyAfter` | 拆除 Dart 错误钩子的熔断窗口 |
+| 窗口期内 Dart 错误钩子触发 | 计入一次失败，在下次冷启动准备回滚 |
+| 下次冷启动 `shouldLoadPatch` | 在 API 30+ 且 pid 已知时优先查询 `getHistoricalProcessExitReasons`，否则退化到 `patch_loading` |
+| `crash_count >= maxCrashCount` | 删除补丁目录，写入黑名单，回退 APK 内置版本 |
 
 ## Android 11+ ApplicationExitInfo 映射
 
-Android 11+ 上，插件会根据 `ApplicationExitInfo` 判断进程退出原因。
+Android 11+ 上，`CrashGuard` 查询上一次会话的退出原因，仅计入下列 4 类崩溃：
 
 | reason | 是否计入崩溃 |
 |---|---|
 | `REASON_CRASH` | 是 |
 | `REASON_CRASH_NATIVE` | 是 |
 | `REASON_ANR` | 是 |
+| `REASON_INITIALIZATION_FAILURE` | 是 |
 | `REASON_USER_REQUESTED` | 否 |
 | `REASON_USER_STOPPED` | 否 |
 | `REASON_LOW_MEMORY` | 否 |
@@ -311,19 +301,17 @@ Android 11+ 上，插件会根据 `ApplicationExitInfo` 判断进程退出原因
 
 ## Dart 层白屏兜底
 
-补丁常见故障不一定会导致进程退出。  
-例如 Dart 层 throw 被 framework 捕获，进程仍然存活，但页面已经白屏或不可用。
+补丁故障不一定会导致进程退出。Dart 层 `throw` 被 framework 捕获时，进程仍然存活，但页面可能已经白屏或不可用。
 
-因此，插件会在 `init()` 时安装：
+为此，`init()` 会在 `verifyAfter` 窗口内安装 **Flutter 层** 错误钩子：
 
 - `PlatformDispatcher.instance.onError`
 - `FlutterError.onError`
 
-在 `verifyAfter` 窗口内，任一钩子触发都会计入一次补丁失败，并在磁盘上准备回滚。
+窗口期内任一钩子触发都会计为一次补丁失败，并在磁盘上准备回滚。
 
-由于当前进程已经加载了补丁 `.so`，无法在不重启的情况下切回 APK 内置版本。  
-实际恢复会在下一次冷启动发生。
+> 注：插件 **不** 安装 Android 的 `Thread.UncaughtExceptionHandler`。Native（JNI / `.so`）崩溃在 *下次* 冷启动时通过 `ApplicationExitInfo`（API 30+）或 `patch_loading` 兜底（API < 30）来识别。恢复始终是跨进程的 —— 当前进程已经加载了补丁 `.so`，无法在不重启的情况下切回 APK 内置版本。
 
-窗口结束后，钩子仍会透明转发到原 handler，但不再向原生侧上报熔断。
+窗口结束后，两个钩子仍会透明转发到原 handler，但不再向原生侧上报熔断。
 
 </details>

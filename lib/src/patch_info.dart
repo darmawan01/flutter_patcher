@@ -1,48 +1,42 @@
-/// 补丁元信息 —— 插件真正需要的最小字段集。
+/// Minimum metadata needed to install a patch.
 ///
-/// 这是一个纯值对象，**不绑定任何后端协议**。无论你的更新来源是 HTTP JSON、
-/// gRPC、Firebase Remote Config、甚至硬编码常量，只要能拼出这几个字段就可以
-/// 交给 [FlutterPatcher.applyPatch]。
-///
-/// ## 必填
-/// - [version]：任意字符串，客户端用来判等（已是当前版本则跳过）
-/// - [patchUrl]：补丁文件 HTTPS 下载地址
-///
-/// ## 强烈推荐
-/// - [md5]：补丁文件本身的 MD5（**小写 hex**，32 字符）。空字符串表示不下发
-///   MD5、跳过下载完整性校验，仅靠 HTTPS 防篡改。**注意**：md5 为空时签名校验
-///   也会一并跳过（签名设计是对 md5 hex 做 Ed25519，无 md5 即无签名输入）。
-/// - [targetVersionCode]：补丁针对的宿主 APK versionCode；保证 APK 升级后旧补丁
-///   自动失效
-///
-/// ## 可选
-/// - [signature]：Ed25519 签名，见 README。仅在 [md5] 非空时生效。
+/// `PatchInfo` is intentionally backend-agnostic. Your update data can come
+/// from HTTP JSON, gRPC, remote config, or hard-coded test data; as long as you
+/// can provide these fields, the patch can be passed to
+/// `FlutterPatcher.applyPatch`.
 class PatchInfo {
-  /// 补丁版本号，例如 "1.0.1-h1"。
+  /// Patch identifier, for example `1.0.1-h1`.
   final String version;
 
-  /// 补丁文件下载地址（HTTP/HTTPS），指向完整 `libapp.so`。
+  /// Patch payload URL.
+  ///
+  /// For a lib-only patch this points to `libapp.so`. For an asset patch this
+  /// points to `patch.zip`.
   final String patchUrl;
 
-  /// 补丁文件本身的 MD5（小写 hex）。用于下载完整性校验。
-  /// 空字符串表示不下发 MD5、跳过下载完整性校验（同时跳过签名校验），仅靠 HTTPS。
+  /// MD5 of the patch payload, lower-case hex.
+  ///
+  /// For a lib-only patch this is the MD5 of `libapp.so`. For an asset patch
+  /// this is the MD5 of `patch.zip`. An empty string skips payload MD5
+  /// verification and also skips signature verification.
   final String md5;
 
-  /// 对 MD5 hex 做 Ed25519 签名后 Base64 编码的字符串。
-  /// 空字符串表示不做签名校验。当 [md5] 也为空时本字段会被忽略。
+  /// Base64 Ed25519 signature over the [md5] hex string.
+  ///
+  /// Empty disables signature verification. When [md5] is empty this field is
+  /// ignored because there is no signed message.
   final String signature;
 
-  /// 补丁构建时绑定的宿主 APK `versionCode`（Android 的 `PackageInfo.versionCode` /
-  /// `longVersionCode`）。用于 **启动时强校验**：宿主 APK 升级后旧补丁会在下次
-  /// 冷启动被自动丢弃，避免加载与当前引擎/Dart kernel 不匹配的 .so 导致崩溃。
+  /// Host APK `versionCode` this patch targets.
   ///
-  /// - 推荐显式填写（该补丁针对的 APK versionCode）
-  /// - 为 null 时，原生侧会在 `applyPatch` 当下抓取当时的宿主 APK versionCode 写入
-  ///   meta，作为兜底；宿主升级后一样会被识别为 mismatch
+  /// On cold start, a patch whose target versionCode no longer matches the
+  /// installed APK is dropped automatically. If null, native code binds the
+  /// patch to the current app versionCode during `applyPatch`.
   final int? targetVersionCode;
 
-  /// 原始 JSON，保留未来扩展字段（如果你是用 [PatchInfo.fromJson] 构造的）。
-  /// 直接构造不会用到。
+  /// Original JSON fields preserved by [PatchInfo.fromJson].
+  ///
+  /// Direct construction does not use this field.
   final Map<String, dynamic> raw;
 
   const PatchInfo({
@@ -54,15 +48,13 @@ class PatchInfo {
     this.raw = const {},
   });
 
-  /// 便捷工厂：用内置 [FlutterPatcher.checkUpdate] 默认协议解析 JSON。
+  /// Parses the minimal built-in check-update protocol.
   ///
-  /// 自己拉取的 JSON 结构不一样？**直接用构造函数就行**，不必走这里。
+  /// If your server response has a different shape, construct [PatchInfo]
+  /// directly. Compatible field names:
   ///
-  /// 兼容的字段名：
   /// - `patchUrl` / `patch_url`
   /// - `targetVersionCode` / `target_version_code`
-  ///
-  /// 未识别的字段会被保留在 [raw] 里不影响解析。
   factory PatchInfo.fromJson(Map<String, dynamic> json) {
     final rawVc = json['targetVersionCode'] ?? json['target_version_code'];
     final int? parsedVc = rawVc is num
@@ -78,32 +70,32 @@ class PatchInfo {
     );
   }
 
-  /// 序列化成传给原生侧 MethodChannel 的 Map。只含插件实际需要的字段。
+  /// Serializes this patch for the native MethodChannel call.
   Map<String, dynamic> toJson() => {
-    'version': version,
-    'patchUrl': patchUrl,
-    if (md5.isNotEmpty) 'md5': md5,
-    'signature': signature,
-    if (targetVersionCode != null) 'targetVersionCode': targetVersionCode,
-  };
+        'version': version,
+        'patchUrl': patchUrl,
+        if (md5.isNotEmpty) 'md5': md5,
+        'signature': signature,
+        if (targetVersionCode != null) 'targetVersionCode': targetVersionCode,
+      };
 
   @override
-  String toString() =>
-      'PatchInfo('
+  String toString() => 'PatchInfo('
       'version=$version, url=$patchUrl, '
       'md5=${md5.isEmpty ? 'none' : md5}, '
       'sig=${signature.isEmpty ? 'none' : '***'})';
 }
 
-/// [FlutterPatcher.applyPatch] 的阶段。
+/// Stages emitted while applying a patch.
 enum PatchApplyPhase {
-  /// 下载中。[PatchApplyProgress.bytesReceived] / [PatchApplyProgress.totalBytes] 有意义。
+  /// Payload download. [PatchApplyProgress.bytesReceived] and
+  /// [PatchApplyProgress.totalBytes] are meaningful in this phase.
   downloading,
 
-  /// 下载完成，正在做 MD5 + 签名校验。
+  /// Payload MD5 / signature verification.
   verifying,
 
-  /// 原子 rename + 写 meta.json。
+  /// Package parsing, asset installation, and transaction commit.
   finalizing,
 }
 
@@ -120,15 +112,16 @@ PatchApplyPhase _parsePhase(String? s) {
   }
 }
 
-/// [FlutterPatcher.applyProgress] 发射的进度事件。
+/// Progress event emitted by `FlutterPatcher.applyProgress`.
 class PatchApplyProgress {
   final PatchApplyPhase phase;
 
-  /// 仅 [phase] == [PatchApplyPhase.downloading] 时有意义。
+  /// Meaningful only when [phase] is [PatchApplyPhase.downloading].
   final int bytesReceived;
 
-  /// 仅 [phase] == [PatchApplyPhase.downloading] 时有意义。服务端未发
-  /// `Content-Length` 时为 `-1`。
+  /// Meaningful only when [phase] is [PatchApplyPhase.downloading].
+  ///
+  /// `-1` means the server did not provide `Content-Length`.
   final int totalBytes;
 
   const PatchApplyProgress({
@@ -137,7 +130,7 @@ class PatchApplyProgress {
     this.totalBytes = 0,
   });
 
-  /// 0.0 ~ 1.0 的下载进度。非下载阶段或 [totalBytes] 未知时返回 null。
+  /// Download progress from 0.0 to 1.0, or null when unknown/not downloading.
   double? get fraction {
     if (phase != PatchApplyPhase.downloading) return null;
     if (totalBytes <= 0) return null;
@@ -167,37 +160,36 @@ class PatchApplyProgress {
   }
 }
 
-/// [FlutterPatcher.applyPatch] 的失败原因分类。
-///
-/// 调用方可据此决定不同处理：是自动重试、告警服务端、还是提示用户。
+/// Classified failure reason for `FlutterPatcher.applyPatch`.
 enum PatchApplyError {
-  /// 服务端下发的 JSON 缺 version / patchUrl 等必填字段，或 md5 非空但格式错误。
-  /// → 告警服务端，无法自动恢复。
+  /// Missing version/URL, invalid MD5 format, unsupported mode, or target
+  /// version mismatch.
   invalidArgs,
 
-  /// (version, md5) 在本地黑名单中（曾导致启动崩溃 / md5 不匹配 / 签名不通过）。
-  /// → **告警服务端立即下架该补丁**；不要自动重试。如需调试覆盖，调用
-  /// [FlutterPatcher.clearBlacklist]。
+  /// The same `(version, md5)` payload is in the local bad-patch blacklist.
   blacklisted,
 
-  /// 下载失败（重试 N 次后依然失败）。
-  /// → 稍后重试，通常网络环境变化后自动恢复。
+  /// Download failed after retries.
   network,
 
-  /// 下载文件的 md5 与服务端下发的 md5 不匹配。
-  /// → CDN 脏数据或服务端 md5 计算错误，检查后重试。
+  /// Payload, lib, or overlay asset MD5 did not match expected metadata.
   md5Mismatch,
 
-  /// Ed25519 签名验证失败，或 API < 33 且 strict 模式拒绝。
-  /// → **可能被篡改**，不建议自动重试。
+  /// Ed25519 verification failed, or strict mode rejected a signed patch on an
+  /// Android version without Ed25519 support.
   signatureInvalid,
 
-  /// 磁盘 / 文件系统错误（磁盘满、权限、rename 失败）。
-  /// → 稍后重试。
+  /// The patch package has no `libapp.so` for the current device ABI.
+  unsupportedAbi,
+
+  /// Invalid asset package: bad zip/schema/manifest, unsafe path, missing asset
+  /// entry, or unsupported asset mode/op.
+  assetPackageInvalid,
+
+  /// Filesystem, disk space, copy, fsync, or rename failure.
   ioError,
 
-  /// 未被分类的异常 / 原生侧抛出的其他错误。
-  /// → 上报到监控，看日志定位。
+  /// Unclassified native/channel error.
   unknown,
 }
 
@@ -213,6 +205,10 @@ PatchApplyError _parseApplyError(String? code) {
       return PatchApplyError.md5Mismatch;
     case 'SIGNATURE_INVALID':
       return PatchApplyError.signatureInvalid;
+    case 'UNSUPPORTED_ABI':
+      return PatchApplyError.unsupportedAbi;
+    case 'ASSET_PACKAGE_INVALID':
+      return PatchApplyError.assetPackageInvalid;
     case 'IO_ERROR':
       return PatchApplyError.ioError;
     default:
@@ -220,29 +216,17 @@ PatchApplyError _parseApplyError(String? code) {
   }
 }
 
-/// [FlutterPatcher.applyPatch] 的结构化返回值。
-///
-/// 用法：
-/// ```dart
-/// final r = await FlutterPatcher.applyPatch(info);
-/// if (r.ok) {
-///   // 补丁已就绪，下次冷启动生效
-/// } else {
-///   switch (r.error) {
-///     case PatchApplyError.network: /* 稍后重试 */ break;
-///     case PatchApplyError.signatureInvalid: /* 告警，不重试 */ break;
-///     default: /* 记日志 */ break;
-///   }
-/// }
-/// ```
+/// Structured result returned by `FlutterPatcher.applyPatch`.
 class PatchApplyResult {
-  /// 是否成功。已安装过相同 version 的补丁也算成功（幂等）。
+  /// Whether the patch was installed successfully.
+  ///
+  /// Reapplying the same already-installed patch is also considered success.
   final bool ok;
 
-  /// 失败原因分类。[ok] == true 时为 null。
+  /// Failure category. Null when [ok] is true.
   final PatchApplyError? error;
 
-  /// 给开发者看的失败描述。可能为 null。不要直接展示给用户。
+  /// Developer-facing failure description. Do not show directly to users.
   final String? message;
 
   const PatchApplyResult._({required this.ok, this.error, this.message});
@@ -252,7 +236,7 @@ class PatchApplyResult {
   factory PatchApplyResult.failure(PatchApplyError error, [String? message]) =>
       PatchApplyResult._(ok: false, error: error, message: message);
 
-  /// 从原生返回的 Map 反序列化。非预期结构一律归到 [PatchApplyError.unknown]。
+  /// Deserializes the native MethodChannel result.
   factory PatchApplyResult.fromNative(Object? native) {
     if (native is! Map) {
       return PatchApplyResult.failure(
@@ -274,12 +258,12 @@ class PatchApplyResult {
       : 'PatchApplyResult(error=${error?.name}, message=$message)';
 }
 
-/// [FlutterPatcher.checkUpdate] 的结果。
+/// Result returned by `FlutterPatcher.checkUpdate`.
 class PatchCheckResult {
-  /// 是否有新补丁可用。
+  /// Whether a new patch is available.
   final bool hasUpdate;
 
-  /// 新补丁信息。`hasUpdate == false` 时为 null。
+  /// Patch metadata. Null when [hasUpdate] is false.
   final PatchInfo? patch;
 
   const PatchCheckResult({required this.hasUpdate, this.patch});
