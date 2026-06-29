@@ -18,7 +18,7 @@ class PatchManagerTest {
         val result = PatchManager.validatePatchArgs(
             version = "1.0.0-h1",
             url = "https://example.com/libapp.so",
-            md5 = "0123456789abcdef0123456789abcdef",
+            sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
             mode = "full",
             targetVersionCode = 100,
             currentVersionCode = 100
@@ -32,7 +32,7 @@ class PatchManagerTest {
         val result = PatchManager.validatePatchArgs(
             version = "1.0.0-h1",
             url = "https://example.com/libapp.so",
-            md5 = "bad-md5",
+            sha256 = "bad-sha256",
             mode = "full",
             targetVersionCode = 100,
             currentVersionCode = 100
@@ -46,7 +46,7 @@ class PatchManagerTest {
         val result = PatchManager.validatePatchArgs(
             version = "1.0.0-h1",
             url = "https://example.com/libapp.so",
-            md5 = "0123456789abcdef0123456789abcdef",
+            sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
             mode = "full",
             targetVersionCode = 101,
             currentVersionCode = 100
@@ -60,7 +60,7 @@ class PatchManagerTest {
         val result = PatchManager.validatePatchArgs(
             version = "1.0.0-h1",
             url = "https://example.com/app.patch",
-            md5 = "0123456789abcdef0123456789abcdef",
+            sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
             mode = "delta",
             targetVersionCode = 100,
             currentVersionCode = 100
@@ -74,7 +74,7 @@ class PatchManagerTest {
         val result = PatchManager.validatePatchArgs(
             version = "1.0.0-h1",
             url = "https://example.com/libapp.so",
-            md5 = "",
+            sha256 = "",
             mode = "full",
             targetVersionCode = 100,
             currentVersionCode = 100
@@ -88,7 +88,7 @@ class PatchManagerTest {
         val r1 = PatchManager.validatePatchArgs(
             version = "",
             url = "https://example.com/libapp.so",
-            md5 = "",
+            sha256 = "",
             mode = "full",
             targetVersionCode = 100,
             currentVersionCode = 100
@@ -96,7 +96,7 @@ class PatchManagerTest {
         val r2 = PatchManager.validatePatchArgs(
             version = "1.0.0-h1",
             url = "",
-            md5 = "",
+            sha256 = "",
             mode = "full",
             targetVersionCode = 100,
             currentVersionCode = 100
@@ -365,7 +365,8 @@ class PatchManagerTest {
             val newSo = File(root, "new.so").apply { writeText("new-so") }
             val newMeta = JSONObject()
                 .put("version", "new")
-                .put("effectiveMd5", "0123456789abcdef0123456789abcdef")
+                .put("effectiveSha256",
+                    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
 
             val result = invokePrivate(manager, "finalizePatch", newSo, null, null, newMeta)
 

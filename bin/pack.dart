@@ -251,11 +251,11 @@ void _writePatchPackage({
   final outZip = File('${outDir.path}/patch.zip');
   outZip.writeAsBytesSync(packageBytes);
 
-  final payloadMd5 = md5.convert(packageBytes).toString();
+  final payloadSha256 = sha256.convert(packageBytes).toString();
   final outerManifest = <String, dynamic>{
     'schemaVersion': 2,
     'version': version,
-    'md5': payloadMd5,
+    'sha256': payloadSha256,
     'targetVersionCode': targetVersionCode,
     'abi': abi,
     'payload': 'patch.zip',
@@ -267,7 +267,7 @@ void _writePatchPackage({
     stdout.writeln('[pack] overlay files: ${patchFiles.length}');
   }
   stdout.writeln('[pack] payload: ${outZip.path}');
-  stdout.writeln('[pack] md5: $payloadMd5');
+  stdout.writeln('[pack] sha256: $payloadSha256');
   stdout.writeln('[pack] manifest: ${outDir.path}/manifest.json');
 }
 

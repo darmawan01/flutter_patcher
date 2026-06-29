@@ -98,7 +98,7 @@ open class FlutterPatcherApplication : FlutterApplication() {
                     // md5 / signature 失败 = 强烈"补丁有问题"信号，连带入黑名单。
                     // meta_corrupted / version_code_mismatch 不入黑名单（前者 key 不全，后者
                     // 属于正常 APK 升级而非补丁本身有问题）。
-                    val blacklistMd5 = extras["blacklistMd5"] as? String
+                    val blacklistHash = extras["blacklistHash"] as? String
                     val blacklistReason = when (status) {
                         BootDiagnosticStore.DROPPED_MD5_MISMATCH ->
                             BlacklistStore.REASON_MD5_MISMATCH
@@ -106,8 +106,8 @@ open class FlutterPatcherApplication : FlutterApplication() {
                             BlacklistStore.REASON_SIGNATURE_INVALID
                         else -> null
                     }
-                    if (blacklistReason != null && version != null && !blacklistMd5.isNullOrEmpty()) {
-                        BlacklistStore.add(context, version, blacklistMd5, blacklistReason)
+                    if (blacklistReason != null && version != null && !blacklistHash.isNullOrEmpty()) {
+                        BlacklistStore.add(context, version, blacklistHash, blacklistReason)
                     }
 
                     BootDiagnosticStore.record(

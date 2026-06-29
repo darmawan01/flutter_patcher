@@ -22,7 +22,7 @@ class MockPatch {
     required this.patchFile,
     required this.bytes,
     required this.version,
-    required this.md5,
+    required this.sha256,
     required this.targetVersionCode,
     required this.payload,
   });
@@ -30,7 +30,7 @@ class MockPatch {
   final File patchFile;
   final List<int> bytes;
   final String version;
-  final String md5;
+  final String sha256;
   final int? targetVersionCode;
   final String payload;
 }
@@ -87,7 +87,7 @@ Future<int> main(List<String> argv) async {
       patch: args['patch'] as String?,
       manifest: args['manifest'] as String?,
       version: args['version'] as String?,
-      md5Override: args['md5'] as String?,
+      sha256Override: args['sha256'] as String?,
       targetVersionCode: _parseOptionalInt(
         args['target-version-code'] as String?,
         '--target-version-code',
@@ -130,9 +130,9 @@ ArgParser buildArgParser() => ArgParser()
     help: 'Host APK versionCode. Overrides manifest.targetVersionCode.',
   )
   ..addOption(
-    'md5',
-    help:
-        'Patch MD5. Overrides manifest.md5; computed automatically if absent.',
+    'sha256',
+    help: 'Patch SHA-256. Overrides manifest.sha256; computed automatically '
+        'if absent.',
   )
   ..addOption(
     'host',
@@ -147,7 +147,7 @@ Future<MockPatch> loadMockPatch({
   String? patch,
   String? manifest,
   String? version,
-  String? md5Override,
+  String? sha256Override,
   int? targetVersionCode,
 }) async {
   if (dist != null && patch != null) {
@@ -173,9 +173,9 @@ Future<MockPatch> loadMockPatch({
 
   final resolvedVersion =
       version ?? (manifestJson['version'] as String?) ?? 'mock-1';
-  final resolvedMd5 = md5Override ??
-      (manifestJson['md5'] as String?) ??
-      crypto.md5.convert(bytes).toString();
+  final resolvedSha256 = sha256Override ??
+      (manifestJson['sha256'] as String?) ??
+      crypto.sha256.convert(bytes).toString();
   final resolvedTargetVersionCode =
       targetVersionCode ?? _parseManifestVersionCode(manifestJson);
 
@@ -183,7 +183,7 @@ Future<MockPatch> loadMockPatch({
     patchFile: patchFile,
     bytes: bytes,
     version: resolvedVersion,
-    md5: resolvedMd5,
+    sha256: resolvedSha256,
     targetVersionCode: resolvedTargetVersionCode,
     payload: payload,
   );
@@ -207,7 +207,7 @@ Future<MockPatchServer> startMockPatchServer(
           'patch': {
             'version': config.patch.version,
             'patchUrl': patchUrl,
-            'md5': config.patch.md5,
+            'sha256': config.patch.sha256,
             if (config.patch.targetVersionCode != null)
               'targetVersionCode': config.patch.targetVersionCode,
           },
@@ -236,7 +236,8 @@ Future<void> printServerInfo(MockPatchServer server) async {
   final patch = server.config.patch;
   stdout.writeln('[mock_server] serving ${patch.patchFile.path}');
   stdout.writeln('[mock_server] payload=${patch.payload}');
-  stdout.writeln('[mock_server] version=${patch.version}, md5=${patch.md5}');
+  stdout.writeln(
+      '[mock_server] version=${patch.version}, sha256=${patch.sha256}');
   if (patch.targetVersionCode != null) {
     stdout
         .writeln('[mock_server] targetVersionCode=${patch.targetVersionCode}');

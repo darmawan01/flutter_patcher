@@ -85,15 +85,17 @@ class FlutterPatcher {
   /// Call this in `main()` before `runApp()`. The method is idempotent.
   ///
   /// [publicKeyBase64] is an optional X.509 SubjectPublicKeyInfo Ed25519 public
-  /// key in base64. Empty disables signature verification. If [PatchInfo.md5]
+  /// key in base64. Empty disables signature verification. If [PatchInfo.sha256]
   /// is empty, signature verification is skipped as well because the signed
-  /// message is the md5 hex string.
+  /// message is the SHA-256 hex string.
   ///
   /// [maxCrashCount] defaults to `1` (fail-fast). Once a loaded patch causes an
   /// early boot failure, the SDK rolls it back and blacklists the same payload.
   ///
-  /// [strictSignature] rejects signed patches on Android API < 33, where the
-  /// platform Ed25519 implementation is unavailable.
+  /// [strictSignature] historically rejected signed patches on Android API < 33.
+  /// Ed25519 now runs through the bundled BouncyCastle lightweight crypto API,
+  /// so verification works on every supported API level; the flag is retained
+  /// for source compatibility.
   ///
   /// [loaderFieldCandidates] and [loaderFallbackHeuristic] are advanced Flutter
   /// embedding compatibility controls. Keep defaults unless adapting a new
@@ -228,8 +230,8 @@ class FlutterPatcher {
   /// Useful for bundled example patches, custom downloaders, or isolate-based
   /// loading. The bytes can be either `libapp.so` or `patch.zip`.
   ///
-  /// This helper writes bytes to native cache, computes md5, then reuses
-  /// [applyPatch] through a `file://` URL.
+  /// This helper writes bytes to native cache, computes the SHA-256, then
+  /// reuses [applyPatch] through a `file://` URL.
   static Future<PatchApplyResult> applyPatchBytes(
     Uint8List bytes, {
     required String version,
@@ -253,12 +255,12 @@ class FlutterPatcher {
     String? stagedPath;
     try {
       stagedPath = await platform_io.stagePatchBytes(dir, bytes);
-      final md5Hex = crypto.md5.convert(bytes).toString();
+      final sha256Hex = crypto.sha256.convert(bytes).toString();
       return await applyPatch(
         PatchInfo(
           version: version,
           patchUrl: 'file://$stagedPath',
-          md5: md5Hex,
+          sha256: sha256Hex,
           signature: signature,
           targetVersionCode: targetVersionCode,
         ),

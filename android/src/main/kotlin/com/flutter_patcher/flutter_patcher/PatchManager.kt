@@ -68,14 +68,14 @@ internal class PatchManager(
         private const val PATCH_ASSET_BUNDLE = "flutter_patcher_assets"
         private const val PATCH_ASSETS_PREFIX = "assets/$PATCH_ASSET_BUNDLE/"
         private const val MIN_FREE_SPACE_BUFFER = 10L * 1024L * 1024L
-        private val MD5_HEX = Regex("^[0-9a-fA-F]{32}$")
+        private val SHA256_HEX = Regex("^[0-9a-fA-F]{64}$")
 
         private val APPLY_LOCK = Any()
 
         internal fun validatePatchArgs(
             version: String,
             url: String,
-            md5: String,
+            sha256: String,
             mode: String,
             targetVersionCode: Long?,
             currentVersionCode: Long
@@ -83,10 +83,10 @@ internal class PatchManager(
             if (version.isBlank() || url.isBlank()) {
                 return ApplyResult.failure(ApplyErrorCode.INVALID_ARGS, "missing version/url")
             }
-            if (md5.isNotBlank() && !MD5_HEX.matches(md5)) {
+            if (sha256.isNotBlank() && !SHA256_HEX.matches(sha256)) {
                 return ApplyResult.failure(
                     ApplyErrorCode.INVALID_ARGS,
-                    "md5 must be 32 hex chars or empty"
+                    "sha256 must be 64 hex chars or empty"
                 )
             }
             if (mode != MODE_FULL) {
@@ -115,12 +115,12 @@ internal class PatchManager(
         internal fun isSameInstalledPatch(
             currentMeta: Pair<String, String>?,
             version: String,
-            md5: String
+            sha256: String
         ): Boolean {
             if (currentMeta == null) return false
-            if (md5.isBlank()) return currentMeta.first == version
+            if (sha256.isBlank()) return currentMeta.first == version
             return currentMeta.first == version &&
-                currentMeta.second.equals(md5, ignoreCase = true)
+                currentMeta.second.equals(sha256, ignoreCase = true)
         }
 
         internal fun isZipPayload(file: File): Boolean {
@@ -223,23 +223,23 @@ internal class PatchManager(
             return null
         }
 
-        val expectedMd5 = meta.optString("effectiveMd5", "")
+        val expectedSha256 = meta.optString("effectiveSha256", "")
         val signature = meta.optString("signature", "")
         val publicKey = PatcherConfig.publicKey(context)
         val strictSignature = PatcherConfig.strictSignature(context)
 
-        if (expectedMd5.isEmpty()) {
+        if (expectedSha256.isEmpty()) {
             onDrop?.invoke(
                 BootDiagnosticStore.DROPPED_META_CORRUPTED,
                 version,
-                mapOf("message" to "meta.effectiveMd5 missing")
+                mapOf("message" to "meta.effectiveSha256 missing")
             )
             deletePatch()
             return null
         }
 
         val verifyResult = SignatureVerifier.verifyDetailed(
-            patchFile, expectedMd5, signature, publicKey, strictSignature
+            patchFile, expectedSha256, signature, publicKey, strictSignature
         )
         if (verifyResult != SignatureVerifier.VerifyResult.OK) {
             val status = when (verifyResult) {
@@ -253,7 +253,7 @@ internal class PatchManager(
                 status,
                 version,
                 mapOf(
-                    "blacklistMd5" to meta.optString("downloadMd5", expectedMd5),
+                    "blacklistHash" to meta.optString("downloadSha256", expectedSha256),
                     "message" to "SignatureVerifier returned $verifyResult",
                 )
             )
@@ -305,15 +305,15 @@ internal class PatchManager(
     fun currentMeta(): Pair<String, String>? {
         val meta = readMeta() ?: return null
         val version = meta.optString("version", "")
-        val md5 = meta.optString("downloadMd5", meta.optString("effectiveMd5", ""))
-        if (version.isEmpty() || md5.isEmpty()) return null
-        return version to md5
+        val sha256 = meta.optString("downloadSha256", meta.optString("effectiveSha256", ""))
+        if (version.isEmpty() || sha256.isEmpty()) return null
+        return version to sha256
     }
 
     fun applyPatch(info: Map<String, Any?>): ApplyResult = synchronized(APPLY_LOCK) {
         val version = (info["version"] as? String).orEmpty()
         val url = (info["patchUrl"] as? String).orEmpty()
-        val md5 = (info["md5"] as? String).orEmpty()
+        val sha256 = (info["sha256"] as? String).orEmpty()
         val signature = (info["signature"] as? String).orEmpty()
         val mode = ((info["mode"] as? String) ?: MODE_FULL).lowercase()
         val hasTargetVersionCode = info.containsKey("targetVersionCode")
@@ -329,7 +329,7 @@ internal class PatchManager(
         validatePatchArgs(
             version = version,
             url = url,
-            md5 = md5,
+            sha256 = sha256,
             mode = mode,
             targetVersionCode = serverTargetVc,
             currentVersionCode = currentVc
@@ -341,26 +341,26 @@ internal class PatchManager(
             )
         }
 
-        val blacklistHit = if (md5.isBlank()) {
+        val blacklistHit = if (sha256.isBlank()) {
             BlacklistStore.containsByVersion(context, version)
         } else {
-            BlacklistStore.contains(context, version, md5)
+            BlacklistStore.contains(context, version, sha256)
         }
         if (blacklistHit) {
             return ApplyResult.failure(
                 ApplyErrorCode.BLACKLISTED,
-                "patch (version=$version, md5=$md5) was previously blacklisted"
+                "patch (version=$version, sha256=$sha256) was previously blacklisted"
             )
         }
-        if (isSameInstalledPatch(currentMeta(), version, md5)) {
-            Log.d(TAG, "patch $version with md5=$md5 already installed")
+        if (isSameInstalledPatch(currentMeta(), version, sha256)) {
+            Log.d(TAG, "patch $version with sha256=$sha256 already installed")
             return ApplyResult.SUCCESS
         }
 
         patchDir.mkdirs()
         val downloaded = File(patchDir, "temp_download.bin")
         var lastNetworkError: String? = null
-        var actualMd5: String? = null
+        var actualSha256: String? = null
 
         for (attempt in 1..MAX_RETRIES) {
             try {
@@ -369,19 +369,19 @@ internal class PatchManager(
                     progress?.invoke(Phase.DOWNLOADING, received, total)
                 }
                 progress?.invoke(Phase.VERIFYING, 0L, 0L)
-                val verifiedMd5 = SignatureVerifier.md5(downloaded)
-                if (md5.isNotBlank()) {
-                    if (!verifiedMd5.equals(md5, ignoreCase = true)) {
+                val verifiedSha256 = SignatureVerifier.sha256(downloaded)
+                if (sha256.isNotBlank()) {
+                    if (!verifiedSha256.equals(sha256, ignoreCase = true)) {
                         downloaded.delete()
                         return ApplyResult.failure(
                             ApplyErrorCode.MD5_MISMATCH,
-                            "expected=$md5 actual=$verifiedMd5"
+                            "expected=$sha256 actual=$verifiedSha256"
                         )
                     }
                     val publicKey = PatcherConfig.publicKey(context)
                     val strictSignature = PatcherConfig.strictSignature(context)
                     if (!SignatureVerifier.verifySignatureOnly(
-                            verifiedMd5.lowercase(), signature, publicKey, strictSignature
+                            verifiedSha256.lowercase(), signature, publicKey, strictSignature
                         )
                     ) {
                         downloaded.delete()
@@ -391,9 +391,9 @@ internal class PatchManager(
                         )
                     }
                 } else {
-                    Log.w(TAG, "expected md5 empty, skip md5 & signature verify")
+                    Log.w(TAG, "expected sha256 empty, skip integrity & signature verify")
                 }
-                actualMd5 = verifiedMd5.lowercase()
+                actualSha256 = verifiedSha256.lowercase()
                 break
             } catch (e: Exception) {
                 Log.w(TAG, "attempt=$attempt failed: ${e.message}", e)
@@ -414,7 +414,7 @@ internal class PatchManager(
             }
         }
 
-        val verifiedMd5 = actualMd5 ?: return ApplyResult.failure(
+        val verifiedSha256 = actualSha256 ?: return ApplyResult.failure(
             ApplyErrorCode.NETWORK,
             "download failed after $MAX_RETRIES attempts: $lastNetworkError"
         )
@@ -426,8 +426,8 @@ internal class PatchManager(
                 installPackagePatch(
                     payload = downloaded,
                     version = version,
-                    downloadMd5 = md5,
-                    effectiveMd5 = verifiedMd5,
+                    downloadSha256 = sha256,
+                    effectiveSha256 = verifiedSha256,
                     signature = signature,
                     targetVersionCode = targetVersionCode,
                 )
@@ -435,8 +435,8 @@ internal class PatchManager(
                 installLegacyPatch(
                     downloaded = downloaded,
                     version = version,
-                    downloadMd5 = md5,
-                    effectiveMd5 = verifiedMd5,
+                    downloadSha256 = sha256,
+                    effectiveSha256 = verifiedSha256,
                     signature = signature,
                     targetVersionCode = targetVersionCode,
                 )
@@ -464,15 +464,15 @@ internal class PatchManager(
     private fun installLegacyPatch(
         downloaded: File,
         version: String,
-        downloadMd5: String,
-        effectiveMd5: String,
+        downloadSha256: String,
+        effectiveSha256: String,
         signature: String,
         targetVersionCode: Long,
     ): ApplyResult? {
         val meta = JSONObject().apply {
             put("version", version)
-            put("downloadMd5", downloadMd5)
-            put("effectiveMd5", effectiveMd5)
+            put("downloadSha256", downloadSha256)
+            put("effectiveSha256", effectiveSha256)
             put("signature", signature)
             put(PatcherConfig.META_KEY_TARGET_VERSION_CODE, targetVersionCode)
             put("hasAssets", false)
@@ -484,8 +484,8 @@ internal class PatchManager(
     private fun installPackagePatch(
         payload: File,
         version: String,
-        downloadMd5: String,
-        effectiveMd5: String,
+        downloadSha256: String,
+        effectiveSha256: String,
         signature: String,
         targetVersionCode: Long,
     ): ApplyResult? {
@@ -540,6 +540,8 @@ internal class PatchManager(
             val stagedSo = File(stagingDir, "libapp_patch.so")
             resetStaging()
             extractZipEntry(zip, libEntry, stagedSo)
+            // Inner lib hash stays MD5: it is a corruption check of an entry that
+            // already lives inside the SHA-256-signed patch.zip, not a signed value.
             val installedLibMd5 = SignatureVerifier.md5(stagedSo)
             val expectedLibMd5 = libInfo.optString("md5")
             if (expectedLibMd5.isNotEmpty() &&
@@ -550,15 +552,17 @@ internal class PatchManager(
                     "lib md5 mismatch for $libPath"
                 )
             }
+            // Boot-time integrity re-checks the installed .so against its SHA-256.
+            val installedLibSha256 = SignatureVerifier.sha256(stagedSo)
 
             val assets = packageManifest.optJSONObject("assets")
             if (isDartOnlyAssets(assets)) {
                 val meta = JSONObject().apply {
                     put("version", version)
-                    put("downloadMd5", downloadMd5)
-                    put("effectiveMd5", installedLibMd5)
+                    put("downloadSha256", downloadSha256)
+                    put("effectiveSha256", installedLibSha256)
                     put("signature", "")
-                    put("payloadMd5", effectiveMd5)
+                    put("payloadSha256", effectiveSha256)
                     put("payloadSignature", signature)
                     put(PatcherConfig.META_KEY_TARGET_VERSION_CODE, targetVersionCode)
                     put("hasAssets", false)
@@ -592,10 +596,10 @@ internal class PatchManager(
 
             val meta = JSONObject().apply {
                 put("version", version)
-                put("downloadMd5", downloadMd5)
-                put("effectiveMd5", installedLibMd5)
+                put("downloadSha256", downloadSha256)
+                put("effectiveSha256", installedLibSha256)
                 put("signature", "")
-                put("payloadMd5", effectiveMd5)
+                put("payloadSha256", effectiveSha256)
                 put("payloadSignature", signature)
                 put(PatcherConfig.META_KEY_TARGET_VERSION_CODE, targetVersionCode)
                 put("hasAssets", true)

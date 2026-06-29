@@ -11,25 +11,22 @@ import org.bouncycastle.crypto.signers.Ed25519Signer
  * 补丁文件完整性与签名校验。
  *
  * 策略：
- * - MD5 校验：始终执行（来自 [com.flutter_patcher.flutter_patcher.PatchInfo.md5]）
+ * - SHA-256 完整性校验：始终执行（来自 [com.flutter_patcher.flutter_patcher.PatchInfo.sha256]）
  * - Ed25519 签名：
- *   - signature 为空 → 跳过（仅靠 MD5 + 传输层防篡改）
- *   - signature 非空 且 API >= 33 → 使用 JDK 原生 Ed25519 验签
- *   - signature 非空 且 API < 33：
- *     - strictSignature=true（默认安全） → **拒绝加载**，防止攻击者通过降级到低
- *       版本设备绕过签名校验
- *     - strictSignature=false → 跳过验签（调用方显式选择降级）
+ *   - signature 为空 → 跳过（仅靠 SHA-256 + 传输层防篡改）
+ *   - signature 非空 → 使用 BouncyCastle 轻量级实现验签，不依赖平台 JCA provider，
+ *     在所有受支持的 API 级别（24+）上一致工作
  *
- * 签名的消息体约定为 **MD5 小写 hex 字符串的 UTF-8 字节**，
- * 与 Dart 侧 PatchInfo.signature 含义保持一致。
+ * 签名的消息体约定为 **SHA-256 小写 hex 字符串的 UTF-8 字节**，
+ * 与 Dart 侧 PatchInfo.signature 含义保持一致。MD5 是碰撞可构造的，
+ * 绝不用作签名消息——见 [md5] 的注释。
  */
 internal object SignatureVerifier {
 
     private const val TAG = "FlutterPatcher/Sig"
 
-    /** 计算文件 MD5（小写 hex）。 */
-    fun md5(file: File): String {
-        val digest = MessageDigest.getInstance("MD5")
+    private fun digestHex(file: File, algorithm: String): String {
+        val digest = MessageDigest.getInstance(algorithm)
         file.inputStream().use { input ->
             val buf = ByteArray(8192)
             while (true) {
@@ -42,6 +39,21 @@ internal object SignatureVerifier {
     }
 
     /**
+     * SHA-256 of a file (lower-case hex). This is the security-relevant hash:
+     * it is the integrity check for the signed payload AND the message the
+     * Ed25519 signature is computed over. Use this — never MD5 — for anything
+     * that a signature protects.
+     */
+    fun sha256(file: File): String = digestHex(file, "SHA-256")
+
+    /**
+     * MD5 of a file (lower-case hex). Retained ONLY for non-security corruption
+     * checks of inner patch.zip entries (asset/lib payloads). Never use for the
+     * signed value — MD5 is collision-broken.
+     */
+    fun md5(file: File): String = digestHex(file, "MD5")
+
+    /**
      * 仅校验 Ed25519 签名（调用方已确认 MD5 匹配）。
      *
      * - signature 为空 → 跳过返回 true
@@ -50,10 +62,10 @@ internal object SignatureVerifier {
      * - API < 33 且 strictSignature=false → 跳过返回 true
      * - API >= 33 → 真实 Ed25519 验签
      *
-     * @param md5HexLower 已匹配并**小写化**的 md5 hex 字符串（作为签名消息体）
+     * @param hashHexLower 已匹配并**小写化**的 SHA-256 hex 字符串（作为签名消息体）
      */
     fun verifySignatureOnly(
-        md5HexLower: String,
+        hashHexLower: String,
         signatureBase64: String,
         publicKeyBase64: String,
         strictSignature: Boolean = true
@@ -73,7 +85,7 @@ internal object SignatureVerifier {
         // works on every supported API level (24+), including API < 33 — the old
         // SDK_INT < 33 rejection is gone.
         return try {
-            verifyEd25519(md5HexLower, sig, publicKeyBase64)
+            verifyEd25519(hashHexLower, sig, publicKeyBase64)
         } catch (e: Exception) {
             Log.e(TAG, "Ed25519 verify failed", e)
             false
@@ -87,31 +99,31 @@ internal object SignatureVerifier {
     enum class VerifyResult { OK, MD5_MISMATCH, SIGNATURE_INVALID }
 
     /**
-     * 完整校验（细粒度版本）：MD5 + 可选 Ed25519。返回失败原因分类。
+     * 完整校验（细粒度版本）：SHA-256 完整性 + 可选 Ed25519。返回失败原因分类。
      *
-     * 注意：[expectedMd5] 为空时整体跳过 MD5 与签名校验，直接返回
-     * [VerifyResult.OK]（调用方明确选择"不下发 md5"，仅依赖 HTTPS）。
-     * 启动路径目前仍依赖 meta.effectiveMd5 非空，故启动期不会走到这条分支；
+     * 注意：[expectedSha256] 为空时整体跳过完整性与签名校验，直接返回
+     * [VerifyResult.OK]（调用方明确选择"不下发 hash"，仅依赖 HTTPS）。
+     * 启动路径目前仍依赖 meta.effectiveSha256 非空，故启动期不会走到这条分支；
      * 该分支主要服务于 [PatchManager.applyPatch] 期间的重复使用。
      */
     fun verifyDetailed(
         file: File,
-        expectedMd5: String,
+        expectedSha256: String,
         signatureBase64: String,
         publicKeyBase64: String,
         strictSignature: Boolean = true
     ): VerifyResult {
-        if (expectedMd5.isEmpty()) {
-            Log.w(TAG, "expected md5 empty, skip md5 & signature verify")
+        if (expectedSha256.isEmpty()) {
+            Log.w(TAG, "expected sha256 empty, skip hash & signature verify")
             return VerifyResult.OK
         }
-        val actualMd5 = md5(file)
-        if (!actualMd5.equals(expectedMd5, ignoreCase = true)) {
-            Log.e(TAG, "md5 mismatch: expected=$expectedMd5, actual=$actualMd5")
+        val actualSha256 = sha256(file)
+        if (!actualSha256.equals(expectedSha256, ignoreCase = true)) {
+            Log.e(TAG, "sha256 mismatch: expected=$expectedSha256, actual=$actualSha256")
             return VerifyResult.MD5_MISMATCH
         }
         return if (verifySignatureOnly(
-                actualMd5.lowercase(),
+                actualSha256.lowercase(),
                 signatureBase64,
                 publicKeyBase64,
                 strictSignature
@@ -124,10 +136,10 @@ internal object SignatureVerifier {
     }
 
     /**
-     * 完整校验：MD5 + 可选 Ed25519。
+     * 完整校验：SHA-256 完整性 + 可选 Ed25519。
      *
      * @param file             已下载的补丁文件
-     * @param expectedMd5      manifest 中的预期 MD5（小写 hex）
+     * @param expectedSha256   manifest 中的预期 SHA-256（小写 hex，64 字符）
      * @param signatureBase64  manifest 中的 Ed25519 签名（Base64，允许为空）
      * @param publicKeyBase64  X.509 SubjectPublicKeyInfo 的 Base64 公钥（允许为空）
      * @param strictSignature  API < 33 是否拒绝签名校验（默认 true，安全）
@@ -135,16 +147,16 @@ internal object SignatureVerifier {
      */
     fun verify(
         file: File,
-        expectedMd5: String,
+        expectedSha256: String,
         signatureBase64: String,
         publicKeyBase64: String,
         strictSignature: Boolean = true
     ): Boolean = verifyDetailed(
-        file, expectedMd5, signatureBase64, publicKeyBase64, strictSignature
+        file, expectedSha256, signatureBase64, publicKeyBase64, strictSignature
     ) == VerifyResult.OK
 
     private fun verifyEd25519(
-        md5Hex: String,
+        hashHex: String,
         signatureBase64: String,
         publicKeyBase64: String
     ): Boolean {
@@ -163,7 +175,7 @@ internal object SignatureVerifier {
         }
 
         val publicKey = Ed25519PublicKeyParameters(raw, 0)
-        val msg = md5Hex.toByteArray(Charsets.UTF_8)
+        val msg = hashHex.toByteArray(Charsets.UTF_8)
         val sigBytes = Base64.decode(signatureBase64, Base64.NO_WRAP)
 
         val signer = Ed25519Signer()

@@ -14,17 +14,21 @@ class PatchInfo {
   /// points to `patch.zip`.
   final String patchUrl;
 
-  /// MD5 of the patch payload, lower-case hex.
+  /// SHA-256 of the patch payload, lower-case hex (64 chars).
   ///
-  /// For a lib-only patch this is the MD5 of `libapp.so`. For an asset patch
-  /// this is the MD5 of `patch.zip`. An empty string skips payload MD5
-  /// verification and also skips signature verification.
-  final String md5;
+  /// For a lib-only patch this is the SHA-256 of `libapp.so`. For an asset
+  /// patch this is the SHA-256 of `patch.zip`. An empty string skips payload
+  /// integrity verification and also skips signature verification.
+  ///
+  /// SHA-256 — not MD5 — is the signed value, because MD5 is collision-broken
+  /// and signing over a collidable digest lets an attacker bind one signature
+  /// to two different payloads.
+  final String sha256;
 
-  /// Base64 Ed25519 signature over the [md5] hex string.
+  /// Base64 Ed25519 signature over the [sha256] hex string.
   ///
-  /// Empty disables signature verification. When [md5] is empty this field is
-  /// ignored because there is no signed message.
+  /// Empty disables signature verification. When [sha256] is empty this field
+  /// is ignored because there is no signed message.
   final String signature;
 
   /// Host APK `versionCode` this patch targets.
@@ -42,7 +46,7 @@ class PatchInfo {
   const PatchInfo({
     required this.version,
     required this.patchUrl,
-    this.md5 = '',
+    this.sha256 = '',
     this.signature = '',
     this.targetVersionCode,
     this.raw = const {},
@@ -63,7 +67,7 @@ class PatchInfo {
     return PatchInfo(
       version: (json['version'] ?? '') as String,
       patchUrl: (json['patchUrl'] ?? json['patch_url'] ?? '') as String,
-      md5: (json['md5'] ?? '') as String,
+      sha256: (json['sha256'] ?? '') as String,
       signature: (json['signature'] ?? '') as String,
       targetVersionCode: parsedVc,
       raw: Map<String, dynamic>.from(json),
@@ -74,7 +78,7 @@ class PatchInfo {
   Map<String, dynamic> toJson() => {
         'version': version,
         'patchUrl': patchUrl,
-        if (md5.isNotEmpty) 'md5': md5,
+        if (sha256.isNotEmpty) 'sha256': sha256,
         'signature': signature,
         if (targetVersionCode != null) 'targetVersionCode': targetVersionCode,
       };
@@ -82,7 +86,7 @@ class PatchInfo {
   @override
   String toString() => 'PatchInfo('
       'version=$version, url=$patchUrl, '
-      'md5=${md5.isEmpty ? 'none' : md5}, '
+      'sha256=${sha256.isEmpty ? 'none' : sha256}, '
       'sig=${signature.isEmpty ? 'none' : '***'})';
 }
 
@@ -92,7 +96,7 @@ enum PatchApplyPhase {
   /// [PatchApplyProgress.totalBytes] are meaningful in this phase.
   downloading,
 
-  /// Payload MD5 / signature verification.
+  /// Payload SHA-256 / signature verification.
   verifying,
 
   /// Package parsing, asset installation, and transaction commit.
