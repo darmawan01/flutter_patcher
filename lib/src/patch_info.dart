@@ -193,6 +193,11 @@ enum PatchApplyError {
   /// Filesystem, disk space, copy, fsync, or rename failure.
   ioError,
 
+  /// Patch URL was plaintext `http://` while HTTPS is required, or the TLS
+  /// leaf certificate did not match a configured SPKI pin. Not auto-retryable —
+  /// likely a misconfiguration or a man-in-the-middle.
+  insecureTransport,
+
   /// Unclassified native/channel error.
   unknown,
 }
@@ -215,6 +220,8 @@ PatchApplyError _parseApplyError(String? code) {
       return PatchApplyError.assetPackageInvalid;
     case 'IO_ERROR':
       return PatchApplyError.ioError;
+    case 'INSECURE_TRANSPORT':
+      return PatchApplyError.insecureTransport;
     default:
       return PatchApplyError.unknown;
   }

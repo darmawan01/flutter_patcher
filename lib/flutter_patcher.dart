@@ -97,6 +97,16 @@ class FlutterPatcher {
   /// so verification works on every supported API level; the flag is retained
   /// for source compatibility.
   ///
+  /// [requireHttps] (default true) rejects patch payloads served over plaintext
+  /// `http://`. `file://` (local staging via [applyPatchBytes]) is always
+  /// allowed. Pass `false` only for trusted in-network testing.
+  ///
+  /// [pinnedSpkiSha256] optionally pins the download server's leaf-certificate
+  /// SubjectPublicKeyInfo SHA-256, base64-encoded (the `sha256/…` value from
+  /// OkHttp-style pinning, without the `sha256/` prefix). When non-empty, an
+  /// HTTPS download whose leaf SPKI is not in this set is rejected. Empty
+  /// disables pinning.
+  ///
   /// [loaderFieldCandidates] and [loaderFallbackHeuristic] are advanced Flutter
   /// embedding compatibility controls. Keep defaults unless adapting a new
   /// Flutter version.
@@ -106,6 +116,8 @@ class FlutterPatcher {
     String publicKeyBase64 = '',
     int maxCrashCount = 1,
     bool strictSignature = true,
+    bool requireHttps = true,
+    List<String> pinnedSpkiSha256 = const [],
     List<String> loaderFieldCandidates = const ['flutterLoader'],
     bool loaderFallbackHeuristic = false,
     Duration verifyAfter = const Duration(seconds: 5),
@@ -128,6 +140,8 @@ class FlutterPatcher {
         publicKeyBase64: publicKeyBase64,
         maxCrashCount: maxCrashCount,
         strictSignature: strictSignature,
+        requireHttps: requireHttps,
+        pinnedSpkiSha256: pinnedSpkiSha256,
         loaderFieldCandidates: loaderFieldCandidates,
         loaderFallbackHeuristic: loaderFallbackHeuristic,
       );

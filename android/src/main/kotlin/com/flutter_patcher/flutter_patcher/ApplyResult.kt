@@ -37,6 +37,8 @@ internal data class ApplyResult(
  * - [SIGNATURE_INVALID]：Ed25519 验签失败（或 strict 模式下 API < 33 直接拒绝）→
  *   可能被篡改，**不建议**自动重试
  * - [IO_ERROR]：磁盘 / 文件系统错误（磁盘满、权限）→ 稍后重试
+ * - [INSECURE_TRANSPORT]：补丁 URL 是明文 http（且 requireHttps 开启），或 TLS 证书
+ *   未命中固定的 SPKI pin → **不重试**，可能是中间人攻击；检查服务端配置
  * - [UNKNOWN]：未被分类的异常 → 上报到监控，看日志定位
  */
 internal object ApplyErrorCode {
@@ -48,5 +50,6 @@ internal object ApplyErrorCode {
     const val UNSUPPORTED_ABI = "UNSUPPORTED_ABI"
     const val ASSET_PACKAGE_INVALID = "ASSET_PACKAGE_INVALID"
     const val IO_ERROR = "IO_ERROR"
+    const val INSECURE_TRANSPORT = "INSECURE_TRANSPORT"
     const val UNKNOWN = "UNKNOWN"
 }

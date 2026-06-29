@@ -120,10 +120,15 @@ class FlutterPatcherPlugin :
         val pk = call.argument<String>("publicKeyBase64") ?: ""
         val max = call.argument<Int>("maxCrashCount") ?: PatcherConfig.DEFAULT_MAX_CRASH
         val strict = call.argument<Boolean>("strictSignature") ?: PatcherConfig.DEFAULT_STRICT_SIG
+        val requireHttps = call.argument<Boolean>("requireHttps")
+            ?: PatcherConfig.DEFAULT_REQUIRE_HTTPS
+        val pinnedSpki = call.argument<List<String>>("pinnedSpkiSha256") ?: emptyList()
         val fields = call.argument<List<String>>("loaderFieldCandidates") ?: emptyList()
         val heuristic = call.argument<Boolean>("loaderFallbackHeuristic")
             ?: PatcherConfig.DEFAULT_LOADER_HEURISTIC
-        PatcherConfig.saveConfig(appContext, pk, max, strict, fields, heuristic)
+        PatcherConfig.saveConfig(
+            appContext, pk, max, strict, requireHttps, pinnedSpki, fields, heuristic
+        )
         result.success(null)
     }
 

@@ -3,6 +3,7 @@ package com.flutter_patcher.flutter_patcher
 import android.content.Context
 import android.os.Build
 import android.os.SystemClock
+import android.util.Base64
 import android.util.Log
 import io.flutter.plugin.common.StandardMessageCodec
 import org.json.JSONArray
@@ -14,7 +15,9 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.ByteBuffer
+import java.security.MessageDigest
 import java.util.zip.ZipException
+import javax.net.ssl.HttpsURLConnection
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
@@ -39,6 +42,9 @@ private class PatchInstallException(
     message: String,
     cause: Throwable? = null
 ) : RuntimeException(message, cause)
+
+/** TLS leaf-cert SPKI did not match any configured pin. Not retryable. */
+private class PinningException(message: String) : RuntimeException(message)
 
 internal fun codecBufferToByteArray(buffer: ByteBuffer): ByteArray {
     buffer.rewind()
@@ -357,6 +363,20 @@ internal class PatchManager(
             return ApplyResult.SUCCESS
         }
 
+        // Transport security: reject plaintext http when https is required. file://
+        // (local staging from applyPatchBytes) and https are always allowed. This
+        // is a fast, deterministic check, so it runs before the download loop and
+        // is never retried.
+        if (PatcherConfig.requireHttps(context)) {
+            val scheme = runCatching { URL(url).protocol?.lowercase() }.getOrNull()
+            if (scheme == "http") {
+                return ApplyResult.failure(
+                    ApplyErrorCode.INSECURE_TRANSPORT,
+                    "patch URL must be https (got http); set requireHttps=false to allow"
+                )
+            }
+        }
+
         patchDir.mkdirs()
         val downloaded = File(patchDir, "temp_download.bin")
         var lastNetworkError: String? = null
@@ -395,6 +415,11 @@ internal class PatchManager(
                 }
                 actualSha256 = verifiedSha256.lowercase()
                 break
+            } catch (e: PinningException) {
+                Log.e(TAG, "certificate pinning failed: ${e.message}")
+                downloaded.delete()
+                stagingDir.deleteRecursively()
+                return ApplyResult.failure(ApplyErrorCode.INSECURE_TRANSPORT, e.message)
             } catch (e: Exception) {
                 Log.w(TAG, "attempt=$attempt failed: ${e.message}", e)
                 lastNetworkError = e.message
@@ -1065,9 +1090,29 @@ internal class PatchManager(
             conn.requestMethod = "GET"
             val code = conn.responseCode
             if (code !in 200..299) throw RuntimeException("HTTP $code")
+            // Pinning runs after responseCode (the handshake is complete) but before
+            // we read the body, so a MITM cert is rejected before any bytes are used.
+            verifyCertPinning(conn)
             streamToFile(conn.inputStream, dest, conn.contentLengthLong, onBytes)
         } finally {
             conn.disconnect()
+        }
+    }
+
+    private fun verifyCertPinning(conn: HttpURLConnection) {
+        val pins = PatcherConfig.pinnedSpkiSha256(context)
+        if (pins.isEmpty()) return
+        if (conn !is HttpsURLConnection) {
+            throw PinningException("certificate pinning configured but connection is not https")
+        }
+        val leaf = conn.serverCertificates.firstOrNull()
+            ?: throw PinningException("no server certificate to pin")
+        val spkiSha256 = Base64.encodeToString(
+            MessageDigest.getInstance("SHA-256").digest(leaf.publicKey.encoded),
+            Base64.NO_WRAP
+        )
+        if (pins.none { it.trim() == spkiSha256 }) {
+            throw PinningException("server SPKI pin mismatch (got $spkiSha256)")
         }
     }
 

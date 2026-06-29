@@ -21,6 +21,8 @@ internal object PatcherConfig {
     private const val KEY_PUBLIC_KEY = "public_key_base64"
     private const val KEY_MAX_CRASH = "max_crash_count"
     private const val KEY_STRICT_SIG = "strict_signature"
+    private const val KEY_REQUIRE_HTTPS = "require_https"
+    private const val KEY_PINNED_SPKI = "pinned_spki_sha256"
     private const val KEY_LOADER_FIELDS = "loader_field_candidates"
     private const val KEY_LOADER_HEURISTIC = "loader_fallback_heuristic"
 
@@ -54,6 +56,14 @@ internal object PatcherConfig {
      */
     const val DEFAULT_MAX_CRASH = 1
     const val DEFAULT_STRICT_SIG = true
+
+    /**
+     * 默认 true：补丁下载强制走 https。明文 http 下载的补丁可被中间人替换，即使有
+     * 签名校验，攻击者也能用一个旧的、已签名但被服务端下架的补丁做降级攻击（在
+     * #3/#7 之前签名里还没有绑定 url/version）。业务侧若在内网用 http 自测，显式传
+     * `FlutterPatcher.init(requireHttps: false)`。
+     */
+    const val DEFAULT_REQUIRE_HTTPS = true
     const val DEFAULT_LOADER_HEURISTIC = false
 
     fun prefs(context: Context): SharedPreferences =
@@ -87,6 +97,8 @@ internal object PatcherConfig {
         publicKeyBase64: String,
         maxCrashCount: Int,
         strictSignature: Boolean,
+        requireHttps: Boolean,
+        pinnedSpkiSha256: List<String>,
         loaderFieldCandidates: List<String>,
         loaderFallbackHeuristic: Boolean
     ) {
@@ -94,6 +106,8 @@ internal object PatcherConfig {
             .putString(KEY_PUBLIC_KEY, publicKeyBase64)
             .putInt(KEY_MAX_CRASH, maxCrashCount.coerceAtLeast(1))
             .putBoolean(KEY_STRICT_SIG, strictSignature)
+            .putBoolean(KEY_REQUIRE_HTTPS, requireHttps)
+            .putString(KEY_PINNED_SPKI, encodeLoaderFieldCandidates(pinnedSpkiSha256))
             .putString(KEY_LOADER_FIELDS, encodeLoaderFieldCandidates(loaderFieldCandidates))
             .putBoolean(KEY_LOADER_HEURISTIC, loaderFallbackHeuristic)
             .apply()
@@ -107,6 +121,13 @@ internal object PatcherConfig {
 
     fun strictSignature(context: Context): Boolean =
         prefs(context).getBoolean(KEY_STRICT_SIG, DEFAULT_STRICT_SIG)
+
+    fun requireHttps(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_REQUIRE_HTTPS, DEFAULT_REQUIRE_HTTPS)
+
+    /** Pinned leaf-cert SPKI SHA-256 hashes (base64). Empty = pinning disabled. */
+    fun pinnedSpkiSha256(context: Context): List<String> =
+        decodeLoaderFieldCandidates(prefs(context).all[KEY_PINNED_SPKI])
 
     fun loaderFieldCandidates(context: Context): List<String> =
         decodeLoaderFieldCandidates(prefs(context).all[KEY_LOADER_FIELDS])

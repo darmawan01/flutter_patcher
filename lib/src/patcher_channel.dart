@@ -12,6 +12,8 @@ class PatcherChannel {
     required String publicKeyBase64,
     required int maxCrashCount,
     required bool strictSignature,
+    required bool requireHttps,
+    required List<String> pinnedSpkiSha256,
     required List<String> loaderFieldCandidates,
     required bool loaderFallbackHeuristic,
   }) async {
@@ -19,6 +21,8 @@ class PatcherChannel {
       'publicKeyBase64': publicKeyBase64,
       'maxCrashCount': maxCrashCount,
       'strictSignature': strictSignature,
+      'requireHttps': requireHttps,
+      'pinnedSpkiSha256': pinnedSpkiSha256,
       'loaderFieldCandidates': loaderFieldCandidates,
       'loaderFallbackHeuristic': loaderFallbackHeuristic,
     });
