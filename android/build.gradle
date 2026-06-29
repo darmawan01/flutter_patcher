@@ -66,6 +66,10 @@ android {
     }
 
     dependencies {
+        // Self-contained Ed25519 verification (lightweight crypto API) so signature
+        // checks don't depend on platform JCA provider availability, which is missing
+        // on API 33 and routes to the wrong (AndroidKeyStore) provider on API 35.
+        implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
         testImplementation("org.jetbrains.kotlin:kotlin-test")
         testImplementation("org.json:json:20240303")
         testImplementation("org.mockito:mockito-core:5.0.0")

@@ -21,3 +21,8 @@
 # Flutter Engine reflection targets used by LoaderHook.
 -keep class io.flutter.FlutterInjector { *; }
 -keep class io.flutter.embedding.engine.loader.FlutterLoader { *; }
+
+# BouncyCastle lightweight Ed25519 verifier used by SignatureVerifier.
+-keep class org.bouncycastle.crypto.signers.Ed25519Signer { *; }
+-keep class org.bouncycastle.crypto.params.Ed25519PublicKeyParameters { *; }
+-dontwarn org.bouncycastle.**

@@ -1,13 +1,11 @@
 package com.flutter_patcher.flutter_patcher
 
-import android.os.Build
 import android.util.Base64
 import android.util.Log
 import java.io.File
-import java.security.KeyFactory
 import java.security.MessageDigest
-import java.security.Signature
-import java.security.spec.X509EncodedKeySpec
+import org.bouncycastle.crypto.params.Ed25519PublicKeyParameters
+import org.bouncycastle.crypto.signers.Ed25519Signer
 
 /**
  * 补丁文件完整性与签名校验。
@@ -70,22 +68,10 @@ internal object SignatureVerifier {
             return false
         }
 
-        if (Build.VERSION.SDK_INT < 33) {
-            if (strictSignature) {
-                Log.e(
-                    TAG,
-                    "API ${Build.VERSION.SDK_INT} < 33, Ed25519 not supported; strict mode rejects. " +
-                        "Pass strictSignature=false to FlutterPatcher.init to downgrade (NOT recommended)."
-                )
-                return false
-            }
-            Log.w(
-                TAG,
-                "API ${Build.VERSION.SDK_INT} < 33, Ed25519 not supported; strictSignature=false, skip"
-            )
-            return true
-        }
-
+        // Ed25519 verification uses the bundled BouncyCastle lightweight crypto API,
+        // so it no longer depends on platform JCA provider availability. That means it
+        // works on every supported API level (24+), including API < 33 — the old
+        // SDK_INT < 33 rejection is gone.
         return try {
             verifyEd25519(md5HexLower, sig, publicKeyBase64)
         } catch (e: Exception) {
@@ -163,15 +149,28 @@ internal object SignatureVerifier {
         publicKeyBase64: String
     ): Boolean {
         val pkBytes = Base64.decode(publicKeyBase64, Base64.NO_WRAP)
-        val keySpec = X509EncodedKeySpec(pkBytes)
-        val kf = KeyFactory.getInstance("Ed25519")
-        val pk = kf.generatePublic(keySpec)
+        // Accept either a raw 32-byte Ed25519 key or a full X.509 SubjectPublicKeyInfo
+        // (44 bytes: 12-byte header + 32-byte key). For Ed25519 the raw key is always
+        // the trailing 32 bytes, so this works for both encodings.
+        val raw = when {
+            pkBytes.size == ED25519_KEY_LEN -> pkBytes
+            pkBytes.size > ED25519_KEY_LEN ->
+                pkBytes.copyOfRange(pkBytes.size - ED25519_KEY_LEN, pkBytes.size)
+            else -> {
+                Log.e(TAG, "invalid Ed25519 public key length: ${pkBytes.size}")
+                return false
+            }
+        }
 
-        val sig = Signature.getInstance("Ed25519")
-        sig.initVerify(pk)
-        sig.update(md5Hex.toByteArray(Charsets.UTF_8))
-
+        val publicKey = Ed25519PublicKeyParameters(raw, 0)
+        val msg = md5Hex.toByteArray(Charsets.UTF_8)
         val sigBytes = Base64.decode(signatureBase64, Base64.NO_WRAP)
-        return sig.verify(sigBytes)
+
+        val signer = Ed25519Signer()
+        signer.init(false, publicKey)
+        signer.update(msg, 0, msg.size)
+        return signer.verifySignature(sigBytes)
     }
+
+    private const val ED25519_KEY_LEN = 32
 }
