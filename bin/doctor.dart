@@ -14,6 +14,10 @@ import 'package:flutter_patcher/src/signing.dart';
 /// Checks: manifest fields, patch.zip sha256, signature (if --pubkey), and the
 /// inner lib map / ABIs. Exits non-zero if any check fails.
 Future<int> main(List<String> argv) async {
+  return exitCode = await _run(argv);
+}
+
+Future<int> _run(List<String> argv) async {
   final parser = ArgParser()
     ..addOption('dist', defaultsTo: 'dist', help: 'Directory with manifest.json + patch.zip.')
     ..addOption('pubkey', help: 'Public key (base64) to verify the signature against.')
@@ -61,6 +65,8 @@ Future<int> main(List<String> argv) async {
   final patchNumber = manifest['patchNumber'];
   final signature = manifest['signature'] as String?;
   final abis = manifest['abis'];
+  final rolloutPercent = manifest['rolloutPercent'];
+  final channel = manifest['channel'];
 
   check('version present', version != null && version.isNotEmpty);
   check('targetVersionCode present', targetVc is int);
@@ -83,11 +89,19 @@ Future<int> main(List<String> argv) async {
       final libAbis = lib.keys.toSet();
       check('inner lib ABIs match outer abis', libAbis.containsAll(abis.cast()),
           libAbis.join(', '));
-      var allHaveMd5 = true;
+      // Full-.so entries carry an `md5`; delta entries carry `format: delta` +
+      // the `sha256` of the reconstructed .so. Accept either.
+      var allChecksummed = true;
       lib.forEach((_, v) {
-        if (v is! Map || (v['md5'] as String?)?.isNotEmpty != true) allHaveMd5 = false;
+        if (v is! Map) {
+          allChecksummed = false;
+          return;
+        }
+        final hasMd5 = (v['md5'] as String?)?.isNotEmpty == true;
+        final isDelta = v['format'] == 'delta' && (v['sha256'] as String?)?.isNotEmpty == true;
+        if (!hasMd5 && !isDelta) allChecksummed = false;
       });
-      check('each lib entry has an md5', allHaveMd5);
+      check('each lib entry has a checksum (md5, or delta sha256)', allChecksummed);
     }
   } catch (e) {
     check('patch.zip is a readable package', false, '$e');
@@ -100,13 +114,25 @@ Future<int> main(List<String> argv) async {
     } else if (patchNumber is! int || targetVc is! int || version == null || declaredSha == null) {
       check('signature verifiable', false, 'missing fields to rebuild manifest');
     } else {
-      final msg = PatchSigning.canonicalManifest(
-        version: version,
-        patchNumber: patchNumber,
-        targetVersionCode: targetVc,
-        sha256: declaredSha,
-      );
-      check('Ed25519 signature verifies', PatchSigning.verify(pubkey, msg, signature));
+      // A staged-rollout patch (rolloutPercent present) is signed as v2; rebuild
+      // the matching canonical message or the signature will never verify.
+      final msg = rolloutPercent is int
+          ? PatchSigning.canonicalManifestV2(
+              version: version,
+              patchNumber: patchNumber,
+              targetVersionCode: targetVc,
+              sha256: declaredSha,
+              rolloutPercent: rolloutPercent,
+              channel: channel is String ? channel : '',
+            )
+          : PatchSigning.canonicalManifest(
+              version: version,
+              patchNumber: patchNumber,
+              targetVersionCode: targetVc,
+              sha256: declaredSha,
+            );
+      final kind = rolloutPercent is int ? 'v2' : 'v1';
+      check('Ed25519 signature verifies ($kind manifest)', PatchSigning.verify(pubkey, msg, signature));
     }
   } else {
     stdout.writeln('  --    unsigned patch (integrity-only)');

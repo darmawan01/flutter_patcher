@@ -11,6 +11,10 @@ import 'package:args/args.dart';
 /// makes sure the dependency is declared, and prints the remaining steps to land
 /// your first patch.
 Future<int> main(List<String> argv) async {
+  return exitCode = await _run(argv);
+}
+
+Future<int> _run(List<String> argv) async {
   final parser = ArgParser()
     ..addOption('dir', defaultsTo: '.', help: 'Flutter project directory.')
     ..addOption('server', help: 'Patch server base URL, e.g. https://you.up.railway.app')

@@ -11,6 +11,10 @@ import 'package:flutter_patcher/src/signing.dart';
 /// Prints the private seed (keep secret) and the X.509 public key to paste into
 /// `FlutterPatcher.init(publicKeyBase64: ...)` (or `publicKeysBase64:` for rotation).
 Future<int> main(List<String> argv) async {
+  return exitCode = await _run(argv);
+}
+
+Future<int> _run(List<String> argv) async {
   final parser = ArgParser()
     ..addOption('out', help: 'Directory to write patch_signing.seed + patch_signing.pub.')
     ..addFlag('help', abbr: 'h', negatable: false, help: 'Show help.');

@@ -18,8 +18,8 @@ import 'package:args/args.dart';
 /// the given rollout/channel via /api/config. The server signs the manifest on
 /// the fly, so no signing key is needed here. CI-friendly: exits non-zero on
 /// any failure.
-Future<void> main(List<String> argv) async {
-  exitCode = await _run(argv);
+Future<int> main(List<String> argv) async {
+  return exitCode = await _run(argv);
 }
 
 Future<int> _run(List<String> argv) async {

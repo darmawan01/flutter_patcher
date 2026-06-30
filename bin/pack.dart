@@ -13,6 +13,10 @@ const _flutterAssetsPrefix = 'assets/flutter_assets/';
 const _assetManifestPath = '${_flutterAssetsPrefix}AssetManifest.bin';
 
 Future<int> main(List<String> argv) async {
+  return exitCode = await _run(argv);
+}
+
+Future<int> _run(List<String> argv) async {
   final parser = ArgParser()
     ..addOption(
       'apk',

@@ -11,8 +11,8 @@ import 'package:args/args.dart';
 /// Reads the device-facing `/check` endpoint and prints the active patch,
 /// rollout, channel and kill list — the fastest answer to "why isn't my
 /// device getting the patch?". No admin token needed (/check is public).
-Future<void> main(List<String> argv) async {
-  exitCode = await _run(argv);
+Future<int> main(List<String> argv) async {
+  return exitCode = await _run(argv);
 }
 
 Future<int> _run(List<String> argv) async {
