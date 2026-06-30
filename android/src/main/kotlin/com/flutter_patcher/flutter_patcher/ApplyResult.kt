@@ -52,5 +52,6 @@ internal object ApplyErrorCode {
     const val IO_ERROR = "IO_ERROR"
     const val INSECURE_TRANSPORT = "INSECURE_TRANSPORT"
     const val DOWNGRADE_REJECTED = "DOWNGRADE_REJECTED"
+    const val BASE_MISMATCH = "BASE_MISMATCH"
     const val UNKNOWN = "UNKNOWN"
 }

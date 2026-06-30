@@ -217,6 +217,11 @@ enum PatchApplyError {
   /// Monotonic downgrade protection — refuses replay of an older signed patch.
   downgradeRejected,
 
+  /// The patch was built against a different base `libapp.so` than the one
+  /// installed (same versionCode, drifted base) — applying it would risk a
+  /// Dart-snapshot vs engine mismatch. Rebuild the patch against the live base.
+  baseMismatch,
+
   /// Unclassified native/channel error.
   unknown,
 }
@@ -243,6 +248,8 @@ PatchApplyError _parseApplyError(String? code) {
       return PatchApplyError.insecureTransport;
     case 'DOWNGRADE_REJECTED':
       return PatchApplyError.downgradeRejected;
+    case 'BASE_MISMATCH':
+      return PatchApplyError.baseMismatch;
     default:
       return PatchApplyError.unknown;
   }

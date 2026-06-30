@@ -643,6 +643,25 @@ internal class PatchManager(
             if (!isSafeZipPath(libPath)) {
                 return ApplyResult.failure(ApplyErrorCode.ASSET_PACKAGE_INVALID, "bad lib path")
             }
+            // Base-binary drift guard: if the patch records the base libapp.so it was
+            // built against, refuse to apply it onto a different (same-versionCode)
+            // base — that would mean a Dart snapshot vs engine mismatch and a crash.
+            val baseSha256 = libInfo.optString("baseSha256")
+            if (baseSha256.isNotEmpty()) {
+                val installedBaseSha256 = installedBaseLibSha256(abi)
+                if (installedBaseSha256 == null) {
+                    return ApplyResult.failure(
+                        ApplyErrorCode.BASE_MISMATCH,
+                        "cannot read installed base libapp.so for $abi to verify base"
+                    )
+                }
+                if (!installedBaseSha256.equals(baseSha256, ignoreCase = true)) {
+                    return ApplyResult.failure(
+                        ApplyErrorCode.BASE_MISMATCH,
+                        "patch base mismatch: expected $baseSha256, installed $installedBaseSha256"
+                    )
+                }
+            }
             val libEntry = zip.getEntry(libPath)
                 ?: return ApplyResult.failure(
                     ApplyErrorCode.ASSET_PACKAGE_INVALID,
@@ -988,6 +1007,31 @@ internal class PatchManager(
         paths.add(info.sourceDir)
         info.splitSourceDirs?.forEach { paths.add(it) }
         return paths.filter { it.isNotBlank() }
+    }
+
+    /** SHA-256 of the installed APK's `lib/<abi>/libapp.so` (the base the patch replaces), or null. */
+    private fun installedBaseLibSha256(abi: String): String? {
+        val entryName = "lib/$abi/libapp.so"
+        for (apkPath in installedApkPaths()) {
+            try {
+                ZipFile(apkPath).use { zip ->
+                    val entry = zip.getEntry(entryName) ?: return@use
+                    val digest = MessageDigest.getInstance("SHA-256")
+                    zip.getInputStream(entry).use { input ->
+                        val buf = ByteArray(8192)
+                        while (true) {
+                            val n = input.read(buf)
+                            if (n <= 0) break
+                            digest.update(buf, 0, n)
+                        }
+                    }
+                    return digest.digest().joinToString("") { "%02x".format(it) }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "failed to hash base libapp.so in $apkPath", e)
+            }
+        }
+        return null
     }
 
     private fun overlayPatchAssets(zip: ZipFile, assets: JSONObject, stagingAssets: File) {

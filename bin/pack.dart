@@ -17,6 +17,12 @@ Future<int> main(List<String> argv) async {
       abbr: 'a',
       help: 'Path to the release APK to extract libapp.so and assets from.',
     )
+    ..addOption(
+      'base-apk',
+      help: 'Optional path to the BASE release APK this patch upgrades FROM. '
+          'Records the base libapp.so SHA-256 so the device refuses to apply '
+          'the patch onto a different same-versionCode base (engine drift).',
+    )
     ..addMultiOption(
       'assets',
       help: 'Flutter asset key(s) from pubspec.yaml to include in patch.zip. '
@@ -132,6 +138,26 @@ Future<int> main(List<String> argv) async {
     '[pack] extracted lib/$abi/libapp.so (${_fmtBytes(soBytes.length)})',
   );
 
+  // Optional base fingerprint: SHA-256 of the same-ABI libapp.so in the base APK
+  // this patch upgrades from. The device checks its installed base matches.
+  String? baseLibSha256;
+  final baseApkPath = args['base-apk'] as String?;
+  if (baseApkPath != null) {
+    final baseApk = File(baseApkPath);
+    if (!baseApk.existsSync()) {
+      stderr.writeln('error: --base-apk not found: $baseApkPath');
+      return 66;
+    }
+    final baseArchive = ZipDecoder().decodeBytes(baseApk.readAsBytesSync());
+    final baseSo = _findFile(baseArchive, 'lib/$abi/libapp.so');
+    if (baseSo == null) {
+      stderr.writeln('error: lib/$abi/libapp.so not found in --base-apk.');
+      return 1;
+    }
+    baseLibSha256 = sha256.convert(_archiveFileBytes(baseSo)).toString();
+    stdout.writeln('[pack] base libapp.so sha256: $baseLibSha256');
+  }
+
   outDir.createSync(recursive: true);
   try {
     _writePatchPackage(
@@ -142,6 +168,7 @@ Future<int> main(List<String> argv) async {
       version: version,
       targetVersionCode: targetVersionCode,
       patchNumber: patchNumber,
+      baseLibSha256: baseLibSha256,
       requestedAssets: requestedAssets,
     );
     return 0;
@@ -159,6 +186,7 @@ void _writePatchPackage({
   required String version,
   required int targetVersionCode,
   required int? patchNumber,
+  required String? baseLibSha256,
   required List<String> requestedAssets,
 }) {
   final patchFiles = <String, _PatchAssetFile>{};
@@ -227,6 +255,7 @@ void _writePatchPackage({
       abi: {
         'path': 'lib/$abi/libapp.so',
         'md5': md5.convert(soBytes).toString(),
+        if (baseLibSha256 != null) 'baseSha256': baseLibSha256,
       },
     },
     if (requestedAssets.isNotEmpty)
