@@ -34,6 +34,9 @@ internal object PatcherConfig {
     /** Highest patchNumber ever successfully applied; gates monotonic downgrade protection. */
     private const val KEY_LAST_PATCH_NUMBER = "last_patch_number"
 
+    /** Random per-install id for staged-rollout bucketing (not a device identifier). */
+    private const val KEY_INSTALL_ID = "install_id"
+
     /** PID written at [com.flutter_patcher.flutter_patcher.CrashGuard.markBooting]; consumed
      *  next cold start to look up `ActivityManager.getHistoricalProcessExitReasons` (API 30+).
      *  Unused on API < 30 — that path uses the naive "patch_loading=true ⇒ crash" rule. */
@@ -146,6 +149,31 @@ internal object PatcherConfig {
     /** Highest patchNumber applied so far (0 if none). */
     fun lastPatchNumber(context: Context): Long =
         prefs(context).getLong(KEY_LAST_PATCH_NUMBER, 0L)
+
+    /**
+     * Stable, privacy-safe per-install id for staged-rollout bucketing. A random
+     * UUID generated on first use — NOT the Android ID or any device identifier,
+     * so it can't be used to track the device across apps. Persists until the
+     * app's data is cleared.
+     */
+    fun installId(context: Context): String {
+        val existing = prefs(context).getString(KEY_INSTALL_ID, null)
+        if (!existing.isNullOrEmpty()) return existing
+        val id = java.util.UUID.randomUUID().toString()
+        prefs(context).edit().putString(KEY_INSTALL_ID, id).apply()
+        return id
+    }
+
+    /**
+     * Deterministic rollout bucket 0..99 for a given patchNumber. Stable per
+     * (install, patch): the same device always lands in the same bucket for a
+     * patch, so a rollout that widens from 10% to 50% is a superset (no churn).
+     */
+    fun rolloutBucket(context: Context, patchNumber: Long): Int {
+        val crc = java.util.zip.CRC32()
+        crc.update("${installId(context)}:$patchNumber".toByteArray(Charsets.UTF_8))
+        return (crc.value % 100L).toInt()
+    }
 
     /** Record a successfully applied patchNumber; never lowers the stored high-water mark. */
     fun recordPatchNumber(context: Context, patchNumber: Long) {

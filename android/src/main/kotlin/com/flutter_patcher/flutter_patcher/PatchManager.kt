@@ -323,6 +323,12 @@ internal class PatchManager(
         val sha256 = (info["sha256"] as? String).orEmpty()
         val signature = (info["signature"] as? String).orEmpty()
         val patchNumber = (info["patchNumber"] as? Number)?.toLong()
+        // Staged rollout: present only on v2 manifests. rolloutPercent defaults to
+        // 100 (everyone); channel is informational/bound. Their presence selects
+        // the v2 canonical manifest so they're authenticated, not just advisory.
+        val rolloutPresent = info.containsKey("rolloutPercent") || info.containsKey("channel")
+        val rolloutPercent = ((info["rolloutPercent"] as? Number)?.toInt() ?: 100).coerceIn(0, 100)
+        val channel = (info["channel"] as? String) ?: ""
         val mode = ((info["mode"] as? String) ?: MODE_FULL).lowercase()
         val hasTargetVersionCode = info.containsKey("targetVersionCode")
         val serverTargetVc = (info["targetVersionCode"] as? Number)?.toLong()
@@ -406,9 +412,29 @@ internal class PatchManager(
                     "patchNumber=$patchNumber not greater than last applied=$last"
                 )
             }
-            signedManifest = SignatureVerifier.canonicalManifest(
-                version, patchNumber, serverTargetVc, sha256
-            )
+            signedManifest = if (rolloutPresent) {
+                SignatureVerifier.canonicalManifestV2(
+                    version, patchNumber, serverTargetVc, sha256, rolloutPercent, channel
+                )
+            } else {
+                SignatureVerifier.canonicalManifest(
+                    version, patchNumber, serverTargetVc, sha256
+                )
+            }
+            // Staged rollout gate: only a deterministic slice of installs applies a
+            // partial rollout. Stable per (install, patch), so widening the percent
+            // only adds devices. Runs before download to save excluded devices the
+            // bandwidth. (Tampering the percent can't inject code — the payload is
+            // still signature-verified before install.)
+            if (rolloutPresent && rolloutPercent < 100) {
+                val bucket = PatcherConfig.rolloutBucket(context, patchNumber)
+                if (bucket >= rolloutPercent) {
+                    return ApplyResult.failure(
+                        ApplyErrorCode.NOT_IN_ROLLOUT,
+                        "install bucket=$bucket not in rollout slice (<$rolloutPercent)"
+                    )
+                }
+            }
         } else {
             signedManifest = ""
         }

@@ -267,6 +267,10 @@ class FlutterPatcher {
       if (!check.hasUpdate || patch == null) return PatchStageResult.upToDate();
       final res = await applyPatch(patch, onProgress: onProgress);
       if (res.ok) return PatchStageResult.stagedPatch(patch);
+      // Not being in the rollout slice isn't a failure — nothing to do this round.
+      if (res.error == PatchApplyError.notInRollout) {
+        return PatchStageResult.upToDate();
+      }
       return PatchStageResult.failure(
         res.error ?? PatchApplyError.unknown,
         res.message,

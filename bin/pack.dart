@@ -52,6 +52,15 @@ Future<int> main(List<String> argv) async {
           'Without it the patch is unsigned (integrity-only).',
     )
     ..addOption(
+      'rollout-percent',
+      help: 'Staged rollout percentage 0–100. When set, signs a v2 manifest and '
+          'only that slice of installs applies the patch. Default: 100 (everyone).',
+    )
+    ..addOption(
+      'channel',
+      help: 'Optional release channel label (e.g. beta), bound into the v2 manifest.',
+    )
+    ..addOption(
       'abi',
       help: 'ABI(s) to pack, comma-separated (e.g. arm64-v8a,armeabi-v7a). '
           'Default: every ABI present in the APK. The device picks its own.',
@@ -128,6 +137,26 @@ Future<int> main(List<String> argv) async {
       return 64;
     }
   }
+
+  // Staged rollout (v2 manifest). Present iff --rollout-percent or --channel set.
+  final rolloutRaw = args['rollout-percent'] as String?;
+  final channelArg = args['channel'] as String?;
+  int? rolloutPercent;
+  if (rolloutRaw != null) {
+    rolloutPercent = int.tryParse(rolloutRaw);
+    if (rolloutPercent == null || rolloutPercent < 0 || rolloutPercent > 100) {
+      stderr.writeln('error: --rollout-percent must be an integer 0–100.');
+      return 64;
+    }
+  }
+  final useV2 = rolloutRaw != null || (channelArg?.isNotEmpty ?? false);
+  if (useV2 && signingSeed == null) {
+    stderr.writeln('error: --rollout-percent/--channel require --key (rollout '
+        'must be signed to be enforced on device).');
+    return 64;
+  }
+  final int? rolloutPercentFinal = useV2 ? (rolloutPercent ?? 100) : null;
+  final channelFinal = channelArg ?? '';
 
   final preferredAbi = args['abi'] as String?;
   final outDir = Directory(args['out'] as String);
@@ -215,6 +244,8 @@ Future<int> main(List<String> argv) async {
       targetVersionCode: targetVersionCode,
       patchNumber: patchNumber,
       signingSeed: signingSeed,
+      rolloutPercent: rolloutPercentFinal,
+      channel: channelFinal,
       requestedAssets: requestedAssets,
     );
     return 0;
@@ -232,6 +263,8 @@ void _writePatchPackage({
   required int targetVersionCode,
   required int? patchNumber,
   required String? signingSeed,
+  required int? rolloutPercent,
+  required String channel,
   required List<String> requestedAssets,
 }) {
   final patchFiles = <String, _PatchAssetFile>{};
@@ -350,12 +383,21 @@ void _writePatchPackage({
   final payloadSha256 = sha256.convert(packageBytes).toString();
   String? signature;
   if (signingSeed != null) {
-    final manifest = PatchSigning.canonicalManifest(
-      version: version,
-      patchNumber: patchNumber!,
-      targetVersionCode: targetVersionCode,
-      sha256: payloadSha256,
-    );
+    final manifest = rolloutPercent != null
+        ? PatchSigning.canonicalManifestV2(
+            version: version,
+            patchNumber: patchNumber!,
+            targetVersionCode: targetVersionCode,
+            sha256: payloadSha256,
+            rolloutPercent: rolloutPercent,
+            channel: channel,
+          )
+        : PatchSigning.canonicalManifest(
+            version: version,
+            patchNumber: patchNumber!,
+            targetVersionCode: targetVersionCode,
+            sha256: payloadSha256,
+          );
     signature = PatchSigning.sign(signingSeed, manifest);
   }
   final outerManifest = <String, dynamic>{
@@ -364,6 +406,8 @@ void _writePatchPackage({
     'sha256': payloadSha256,
     'targetVersionCode': targetVersionCode,
     if (patchNumber != null) 'patchNumber': patchNumber,
+    if (rolloutPercent != null) 'rolloutPercent': rolloutPercent,
+    if (rolloutPercent != null) 'channel': channel,
     if (signature != null) 'signature': signature,
     'abis': libVariants.map((v) => v.abi).toList(),
     'payload': 'patch.zip',

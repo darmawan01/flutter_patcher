@@ -30,6 +30,24 @@ class PatchSigning {
       'targetVersionCode=$targetVersionCode\n'
       'sha256=${sha256.toLowerCase()}';
 
+  /// The canonical v2 signed manifest (adds staged-rollout fields) — identical
+  /// to the device builder. Used only when rolloutPercent/channel are present.
+  static String canonicalManifestV2({
+    required String version,
+    required int patchNumber,
+    required int targetVersionCode,
+    required String sha256,
+    required int rolloutPercent,
+    required String channel,
+  }) =>
+      'flutter_patcher.manifest.v2\n'
+      'version=$version\n'
+      'patchNumber=$patchNumber\n'
+      'targetVersionCode=$targetVersionCode\n'
+      'sha256=${sha256.toLowerCase()}\n'
+      'rolloutPercent=$rolloutPercent\n'
+      'channel=$channel';
+
   /// The canonical rollback (kill-switch) list — identical to the device builder.
   static String canonicalRollback(List<int> patchNumbers) {
     final sorted = patchNumbers.toSet().toList()..sort();

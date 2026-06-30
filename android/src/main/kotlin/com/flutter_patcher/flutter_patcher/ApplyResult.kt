@@ -53,5 +53,6 @@ internal object ApplyErrorCode {
     const val INSECURE_TRANSPORT = "INSECURE_TRANSPORT"
     const val DOWNGRADE_REJECTED = "DOWNGRADE_REJECTED"
     const val BASE_MISMATCH = "BASE_MISMATCH"
+    const val NOT_IN_ROLLOUT = "NOT_IN_ROLLOUT"
     const val UNKNOWN = "UNKNOWN"
 }

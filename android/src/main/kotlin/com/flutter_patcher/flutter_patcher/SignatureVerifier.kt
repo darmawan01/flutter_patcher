@@ -183,6 +183,28 @@ internal object SignatureVerifier {
     }
 
     /**
+     * v2 规范化 manifest：在 v1 基础上再绑定 staged rollout 字段（rolloutPercent + channel），
+     * 让灰度比例/通道也不可被中间人篡改。仅当下发响应带 rolloutPercent/channel 时使用；
+     * 不带则仍用 [canonicalManifest]（v1），保持对存量已签补丁的兼容。
+     */
+    fun canonicalManifestV2(
+        version: String,
+        patchNumber: Long,
+        targetVersionCode: Long,
+        sha256: String,
+        rolloutPercent: Int,
+        channel: String
+    ): String = buildString {
+        append("flutter_patcher.manifest.v2\n")
+        append("version=").append(version).append('\n')
+        append("patchNumber=").append(patchNumber).append('\n')
+        append("targetVersionCode=").append(targetVersionCode).append('\n')
+        append("sha256=").append(sha256.lowercase()).append('\n')
+        append("rolloutPercent=").append(rolloutPercent).append('\n')
+        append("channel=").append(channel)
+    }
+
+    /**
      * 规范化"已下架补丁"列表字符串（kill switch）。签名覆盖它，设备据此把已安装但被
      * 服务端下架的补丁删除回内置版本。patchNumbers 必须**升序去重**，逗号连接，无尾换行：
      *

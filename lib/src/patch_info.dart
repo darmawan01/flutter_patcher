@@ -46,6 +46,16 @@ class PatchInfo {
   /// (downgrade protection). Null for unsigned patches.
   final int? patchNumber;
 
+  /// Staged-rollout percentage (0–100). Null means "everyone" (100).
+  ///
+  /// When non-null the patch is a v2 manifest: the signature also covers
+  /// [rolloutPercent] and [channel], and the device only applies if its stable
+  /// per-install bucket falls in the slice.
+  final int? rolloutPercent;
+
+  /// Optional release channel label (e.g. `beta`). Bound into the v2 manifest.
+  final String? channel;
+
   /// Original JSON fields preserved by [PatchInfo.fromJson].
   ///
   /// Direct construction does not use this field.
@@ -58,6 +68,8 @@ class PatchInfo {
     this.signature = '',
     this.targetVersionCode,
     this.patchNumber,
+    this.rolloutPercent,
+    this.channel,
     this.raw = const {},
   });
 
@@ -77,6 +89,12 @@ class PatchInfo {
     final int? parsedPn = rawPn is num
         ? rawPn.toInt()
         : (rawPn is String && rawPn.isNotEmpty ? int.tryParse(rawPn) : null);
+    final rawRollout = json['rolloutPercent'] ?? json['rollout_percent'];
+    final int? parsedRollout = rawRollout is num
+        ? rawRollout.toInt()
+        : (rawRollout is String && rawRollout.isNotEmpty
+            ? int.tryParse(rawRollout)
+            : null);
     return PatchInfo(
       version: (json['version'] ?? '') as String,
       patchUrl: (json['patchUrl'] ?? json['patch_url'] ?? '') as String,
@@ -84,6 +102,8 @@ class PatchInfo {
       signature: (json['signature'] ?? '') as String,
       targetVersionCode: parsedVc,
       patchNumber: parsedPn,
+      rolloutPercent: parsedRollout,
+      channel: json['channel'] as String?,
       raw: Map<String, dynamic>.from(json),
     );
   }
@@ -96,6 +116,8 @@ class PatchInfo {
         'signature': signature,
         if (targetVersionCode != null) 'targetVersionCode': targetVersionCode,
         if (patchNumber != null) 'patchNumber': patchNumber,
+        if (rolloutPercent != null) 'rolloutPercent': rolloutPercent,
+        if (channel != null) 'channel': channel,
       };
 
   @override
@@ -222,6 +244,10 @@ enum PatchApplyError {
   /// Dart-snapshot vs engine mismatch. Rebuild the patch against the live base.
   baseMismatch,
 
+  /// This install isn't in the patch's staged-rollout slice yet. Not a failure —
+  /// `checkAndStage` treats it as up-to-date; it applies when the rollout widens.
+  notInRollout,
+
   /// Unclassified native/channel error.
   unknown,
 }
@@ -250,6 +276,8 @@ PatchApplyError _parseApplyError(String? code) {
       return PatchApplyError.downgradeRejected;
     case 'BASE_MISMATCH':
       return PatchApplyError.baseMismatch;
+    case 'NOT_IN_ROLLOUT':
+      return PatchApplyError.notInRollout;
     default:
       return PatchApplyError.unknown;
   }
