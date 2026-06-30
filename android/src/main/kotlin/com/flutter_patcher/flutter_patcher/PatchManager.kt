@@ -232,7 +232,7 @@ internal class PatchManager(
         val expectedSha256 = meta.optString("effectiveSha256", "")
         val signature = meta.optString("signature", "")
         val signedManifest = meta.optString("signedManifest", "")
-        val publicKey = PatcherConfig.publicKey(context)
+        val publicKeys = PatcherConfig.publicKeys(context)
         val strictSignature = PatcherConfig.strictSignature(context)
 
         if (expectedSha256.isEmpty()) {
@@ -246,7 +246,7 @@ internal class PatchManager(
         }
 
         val verifyResult = SignatureVerifier.verifyDetailed(
-            patchFile, expectedSha256, signedManifest, signature, publicKey, strictSignature
+            patchFile, expectedSha256, signedManifest, signature, publicKeys, strictSignature
         )
         if (verifyResult != SignatureVerifier.VerifyResult.OK) {
             val status = when (verifyResult) {
@@ -434,10 +434,10 @@ internal class PatchManager(
                             "expected=$sha256 actual=$verifiedSha256"
                         )
                     }
-                    val publicKey = PatcherConfig.publicKey(context)
+                    val publicKeys = PatcherConfig.publicKeys(context)
                     val strictSignature = PatcherConfig.strictSignature(context)
                     if (!SignatureVerifier.verifySignatureOnly(
-                            signedManifest, signature, publicKey, strictSignature
+                            signedManifest, signature, publicKeys, strictSignature
                         )
                     ) {
                         downloaded.delete()
@@ -544,10 +544,10 @@ internal class PatchManager(
             return false
         }
         val sorted = rolledBack.toSortedSet().toList()
-        val publicKey = PatcherConfig.publicKey(context)
+        val publicKeys = PatcherConfig.publicKeys(context)
         val strict = PatcherConfig.strictSignature(context)
         val message = SignatureVerifier.canonicalRollback(sorted)
-        if (!SignatureVerifier.verifySignatureOnly(message, signature, publicKey, strict)) {
+        if (!SignatureVerifier.verifySignatureOnly(message, signature, publicKeys, strict)) {
             Log.w(TAG, "rollback list signature invalid, ignoring")
             return false
         }

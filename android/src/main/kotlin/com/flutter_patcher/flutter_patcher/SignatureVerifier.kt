@@ -54,21 +54,23 @@ internal object SignatureVerifier {
     fun md5(file: File): String = digestHex(file, "MD5")
 
     /**
-     * 仅校验 Ed25519 签名（调用方已确认 MD5 匹配）。
+     * 仅校验 Ed25519 签名（调用方已确认完整性哈希匹配）。
      *
      * - signature 为空 → 跳过返回 true
-     * - signature 非空但 publicKey 未配置 → 拒绝
-     * - API < 33 且 strictSignature=true → 拒绝（防止降级攻击）
-     * - API < 33 且 strictSignature=false → 跳过返回 true
-     * - API >= 33 → 真实 Ed25519 验签
+     * - signature 非空但未配置任何可信公钥 → 拒绝
+     * - 其余 → 对**任一**可信公钥验签成功即通过（any-of-N 信任模型，支持密钥轮换）
      *
-     * @param signedMessage 签名所覆盖的消息体（TUF 风格的规范化 manifest 字符串，
-     *   绑定 version/patchNumber/targetVersionCode/sha256；调用方与签名方必须逐字节一致）
+     * 信任锚是宿主 App（经 Play 下发的 init 配置），补丁无法改动它。一次签名 + 多把
+     * 可信公钥：轮换时让设备同时信任旧+新公钥，服务端用任意一把签名；待存量设备都
+     * 升级到含新公钥的 App 版本后，下个 App 版本再从信任集里移除旧公钥。
+     *
+     * @param signedMessage 签名所覆盖的消息体（TUF 风格的规范化 manifest 字符串）
+     * @param publicKeysBase64 可信公钥集合（X.509 SubjectPublicKeyInfo base64）
      */
     fun verifySignatureOnly(
         signedMessage: String,
         signatureBase64: String,
-        publicKeyBase64: String,
+        publicKeysBase64: List<String>,
         strictSignature: Boolean = true
     ): Boolean {
         val sig = signatureBase64.trim()
@@ -76,20 +78,22 @@ internal object SignatureVerifier {
             Log.d(TAG, "signature empty, skip Ed25519 check")
             return true
         }
-        if (publicKeyBase64.isEmpty()) {
-            Log.w(TAG, "signature present but no public key configured, reject")
+        val keys = publicKeysBase64.map { it.trim() }.filter { it.isNotEmpty() }
+        if (keys.isEmpty()) {
+            Log.w(TAG, "signature present but no trusted public key configured, reject")
             return false
         }
 
         // Ed25519 verification uses the bundled BouncyCastle lightweight crypto API,
-        // so it no longer depends on platform JCA provider availability. That means it
-        // works on every supported API level (24+), including API < 33 — the old
-        // SDK_INT < 33 rejection is gone.
-        return try {
-            verifyEd25519(signedMessage, sig, publicKeyBase64)
-        } catch (e: Exception) {
-            Log.e(TAG, "Ed25519 verify failed", e)
-            false
+        // so it works on every supported API level (24+). Accept if ANY trusted key
+        // verifies the signature (any-of-N — enables key rotation).
+        return keys.any { key ->
+            try {
+                verifyEd25519(signedMessage, sig, key)
+            } catch (e: Exception) {
+                Log.e(TAG, "Ed25519 verify failed for a trusted key", e)
+                false
+            }
         }
     }
 
@@ -112,7 +116,7 @@ internal object SignatureVerifier {
         expectedSha256: String,
         signedMessage: String,
         signatureBase64: String,
-        publicKeyBase64: String,
+        publicKeysBase64: List<String>,
         strictSignature: Boolean = true
     ): VerifyResult {
         if (expectedSha256.isEmpty()) {
@@ -127,7 +131,7 @@ internal object SignatureVerifier {
         return if (verifySignatureOnly(
                 signedMessage,
                 signatureBase64,
-                publicKeyBase64,
+                publicKeysBase64,
                 strictSignature
             )
         ) {
@@ -152,10 +156,10 @@ internal object SignatureVerifier {
         expectedSha256: String,
         signedMessage: String,
         signatureBase64: String,
-        publicKeyBase64: String,
+        publicKeysBase64: List<String>,
         strictSignature: Boolean = true
     ): Boolean = verifyDetailed(
-        file, expectedSha256, signedMessage, signatureBase64, publicKeyBase64, strictSignature
+        file, expectedSha256, signedMessage, signatureBase64, publicKeysBase64, strictSignature
     ) == VerifyResult.OK
 
     /**

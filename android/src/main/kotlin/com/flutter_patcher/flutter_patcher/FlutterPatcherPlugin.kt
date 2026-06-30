@@ -118,7 +118,10 @@ class FlutterPatcherPlugin :
     // ==================== handlers ====================
 
     private fun handleSaveConfig(call: MethodCall, result: Result) {
-        val pk = call.argument<String>("publicKeyBase64") ?: ""
+        // any-of-N trusted keys: accept a list, plus the legacy single key for back-compat.
+        val pkList = call.argument<List<String>>("publicKeysBase64") ?: emptyList()
+        val pkSingle = call.argument<String>("publicKeyBase64") ?: ""
+        val keys = (pkList + pkSingle).map { it.trim() }.filter { it.isNotEmpty() }.distinct()
         val max = call.argument<Int>("maxCrashCount") ?: PatcherConfig.DEFAULT_MAX_CRASH
         val strict = call.argument<Boolean>("strictSignature") ?: PatcherConfig.DEFAULT_STRICT_SIG
         val requireHttps = call.argument<Boolean>("requireHttps")
@@ -128,7 +131,7 @@ class FlutterPatcherPlugin :
         val heuristic = call.argument<Boolean>("loaderFallbackHeuristic")
             ?: PatcherConfig.DEFAULT_LOADER_HEURISTIC
         PatcherConfig.saveConfig(
-            appContext, pk, max, strict, requireHttps, pinnedSpki, fields, heuristic
+            appContext, keys, max, strict, requireHttps, pinnedSpki, fields, heuristic
         )
         result.success(null)
     }

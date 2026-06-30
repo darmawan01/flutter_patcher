@@ -89,6 +89,13 @@ class FlutterPatcher {
   /// is empty, signature verification is skipped as well because the signed
   /// message is the SHA-256 hex string.
   ///
+  /// [publicKeysBase64] is the multi-key form: a set of **trusted** signing keys.
+  /// A patch (or kill-switch) signature is accepted if **any** of them verifies
+  /// it. This is how you rotate keys without bricking clients — ship a release
+  /// that trusts both the old and new key, switch the server to sign with the
+  /// new key, then drop the old key in a later release. [publicKeyBase64] is
+  /// merged into this set, so passing either (or both) works.
+  ///
   /// [maxCrashCount] defaults to `1` (fail-fast). Once a loaded patch causes an
   /// early boot failure, the SDK rolls it back and blacklists the same payload.
   ///
@@ -114,6 +121,7 @@ class FlutterPatcher {
   /// [verifyAfter] is the post-first-frame Dart error watch window.
   static Future<void> init({
     String publicKeyBase64 = '',
+    List<String> publicKeysBase64 = const [],
     int maxCrashCount = 1,
     bool strictSignature = true,
     bool requireHttps = true,
@@ -136,8 +144,12 @@ class FlutterPatcher {
     _installBootErrorCatchers();
 
     try {
+      final trustedKeys = <String>[
+        ...publicKeysBase64,
+        if (publicKeyBase64.isNotEmpty) publicKeyBase64,
+      ].map((k) => k.trim()).where((k) => k.isNotEmpty).toSet().toList();
       await PatcherChannel.saveConfig(
-        publicKeyBase64: publicKeyBase64,
+        publicKeysBase64: trustedKeys,
         maxCrashCount: maxCrashCount,
         strictSignature: strictSignature,
         requireHttps: requireHttps,

@@ -9,7 +9,7 @@ class PatcherChannel {
   /// 保存 Dart 侧配置到原生（SharedPreferences）。原生下次冷启动在
   /// Application.attachBaseContext 时读取这份配置做验签与加载。
   static Future<void> saveConfig({
-    required String publicKeyBase64,
+    required List<String> publicKeysBase64,
     required int maxCrashCount,
     required bool strictSignature,
     required bool requireHttps,
@@ -18,7 +18,7 @@ class PatcherChannel {
     required bool loaderFallbackHeuristic,
   }) async {
     await channel.invokeMethod<void>('saveConfig', {
-      'publicKeyBase64': publicKeyBase64,
+      'publicKeysBase64': publicKeysBase64,
       'maxCrashCount': maxCrashCount,
       'strictSignature': strictSignature,
       'requireHttps': requireHttps,

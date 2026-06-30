@@ -19,6 +19,7 @@ internal object PatcherConfig {
 
     // ---- Config keys ----
     private const val KEY_PUBLIC_KEY = "public_key_base64"
+    private const val KEY_PUBLIC_KEYS = "public_keys_base64"
     private const val KEY_MAX_CRASH = "max_crash_count"
     private const val KEY_STRICT_SIG = "strict_signature"
     private const val KEY_REQUIRE_HTTPS = "require_https"
@@ -97,7 +98,7 @@ internal object PatcherConfig {
 
     fun saveConfig(
         context: Context,
-        publicKeyBase64: String,
+        publicKeysBase64: List<String>,
         maxCrashCount: Int,
         strictSignature: Boolean,
         requireHttps: Boolean,
@@ -106,7 +107,8 @@ internal object PatcherConfig {
         loaderFallbackHeuristic: Boolean
     ) {
         prefs(context).edit()
-            .putString(KEY_PUBLIC_KEY, publicKeyBase64)
+            .putString(KEY_PUBLIC_KEYS, encodeLoaderFieldCandidates(publicKeysBase64))
+            .remove(KEY_PUBLIC_KEY)
             .putInt(KEY_MAX_CRASH, maxCrashCount.coerceAtLeast(1))
             .putBoolean(KEY_STRICT_SIG, strictSignature)
             .putBoolean(KEY_REQUIRE_HTTPS, requireHttps)
@@ -116,8 +118,17 @@ internal object PatcherConfig {
             .apply()
     }
 
-    fun publicKey(context: Context): String =
-        prefs(context).getString(KEY_PUBLIC_KEY, "") ?: ""
+    /**
+     * Trusted patch-signing public keys (X.509 SPKI base64). A signature is accepted
+     * if ANY of these verifies it (any-of-N → key rotation). Falls back to the legacy
+     * single-key pref if an older config is still stored.
+     */
+    fun publicKeys(context: Context): List<String> {
+        val list = decodeLoaderFieldCandidates(prefs(context).all[KEY_PUBLIC_KEYS])
+        if (list.isNotEmpty()) return list
+        val legacy = prefs(context).getString(KEY_PUBLIC_KEY, "") ?: ""
+        return if (legacy.isNotEmpty()) listOf(legacy) else emptyList()
+    }
 
     fun maxCrashCount(context: Context): Int =
         prefs(context).getInt(KEY_MAX_CRASH, DEFAULT_MAX_CRASH)
