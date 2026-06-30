@@ -51,6 +51,13 @@ Future<void> main() async {
 }
 ```
 
+Verify the wiring before you ship — catches the usual mistakes (placeholder key,
+`setupPatcher()` not called, unreachable server):
+
+```bash
+dart run flutter_patcher:doctor --project . --check-server
+```
+
 Then ship this build to your devices (store / MDM / sideload) **as your baseline** —
 patches upgrade *from* it.
 
