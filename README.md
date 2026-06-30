@@ -82,6 +82,7 @@ The full docs live in [`docs/`](docs/) and render as a site (docsify — GitHub
 Pages → source `/docs`, or `npx docsify-cli serve docs`):
 
 - **[Getting started](docs/getting-started.md)** — zero → your first patch
+- **[Shipping from CI](docs/ci.md)** — release patches from GitHub Actions / any runner
 - **[Compatibility](docs/compatibility.md)** — API levels, ABIs, what a patch can change
 - **[Security hardening](docs/security-hardening.md)** — threat model + every knob
 - **[iOS — out of scope](docs/ios-out-of-scope.md)**

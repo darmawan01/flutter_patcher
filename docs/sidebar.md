@@ -1,5 +1,6 @@
 - Guide
   - [Getting started](getting-started.md)
+  - [Shipping from CI](ci.md)
   - [Compatibility](compatibility.md)
   - [Security hardening](security-hardening.md)
   - [iOS — out of scope](ios-out-of-scope.md)

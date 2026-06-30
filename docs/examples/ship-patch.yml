@@ -1,0 +1,54 @@
+# Example: ship a flutter_patcher hot-patch from GitHub Actions.
+# Copy to .github/workflows/ in your APP repo. Set repo secrets FP_SERVER and
+# FP_ADMIN_TOKEN (Settings → Secrets and variables → Actions). See docs/ci.md.
+name: Ship hot-patch
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Patch version (e.g. 1.4.0-h1)'
+        required: true
+      target_version_code:
+        description: 'versionCode the patch targets (the build users are running)'
+        required: true
+      rollout:
+        description: 'Rollout percent (start small)'
+        default: '10'
+      channel:
+        description: 'Channel (blank = default/stable)'
+        default: ''
+
+jobs:
+  ship:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - run: flutter pub get
+
+      # Fail early if the app isn't wired up correctly.
+      - run: dart run flutter_patcher:doctor --project .
+
+      - run: flutter build apk --release
+
+      - name: Pack, upload, and make live
+        env:
+          FP_SERVER: ${{ secrets.FP_SERVER }}
+          FP_ADMIN_TOKEN: ${{ secrets.FP_ADMIN_TOKEN }}
+        run: |
+          dart run flutter_patcher:release \
+            --apk build/app/outputs/flutter-apk/app-release.apk \
+            --server "$FP_SERVER" --token "$FP_ADMIN_TOKEN" \
+            --version "${{ inputs.version }}" \
+            --target-version-code "${{ inputs.target_version_code }}" \
+            --patch-number "${{ github.run_number }}" \
+            ${{ inputs.channel && format('--channel {0}', inputs.channel) || '' }} \
+            --rollout "${{ inputs.rollout }}" --make-live
+
+      - name: Confirm what the server is serving
+        run: |
+          dart run flutter_patcher:status --server "${{ secrets.FP_SERVER }}" \
+            ${{ inputs.channel && format('--channel {0}', inputs.channel) || '' }}
