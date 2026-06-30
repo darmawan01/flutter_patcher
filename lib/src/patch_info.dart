@@ -364,3 +364,61 @@ class PatchCheckResult {
     );
   }
 }
+
+/// Outcome of `FlutterPatcher.checkAndStage`.
+enum PatchStageOutcome {
+  /// No new patch (already current, or the server offered nothing).
+  upToDate,
+
+  /// A patch was downloaded, verified, and staged. It becomes active on the
+  /// **next cold start** — the running isolate is never hot-swapped.
+  staged,
+
+  /// Check or apply failed. See [PatchStageResult.error] / message.
+  failed,
+}
+
+/// Result of `FlutterPatcher.checkAndStage` — the safe default update flow.
+class PatchStageResult {
+  final PatchStageOutcome outcome;
+
+  /// The patch staged for next launch. Non-null only when [outcome] is
+  /// [PatchStageOutcome.staged].
+  final PatchInfo? staged;
+
+  /// Failure category when [outcome] is [PatchStageOutcome.failed].
+  final PatchApplyError? error;
+
+  /// Developer-facing failure description. Do not show directly to users.
+  final String? message;
+
+  const PatchStageResult._({
+    required this.outcome,
+    this.staged,
+    this.error,
+    this.message,
+  });
+
+  factory PatchStageResult.upToDate() =>
+      const PatchStageResult._(outcome: PatchStageOutcome.upToDate);
+
+  factory PatchStageResult.stagedPatch(PatchInfo patch) =>
+      PatchStageResult._(outcome: PatchStageOutcome.staged, staged: patch);
+
+  factory PatchStageResult.failure(PatchApplyError error, [String? message]) =>
+      PatchStageResult._(
+        outcome: PatchStageOutcome.failed,
+        error: error,
+        message: message,
+      );
+
+  /// Whether a patch is staged and will take effect on the next cold start.
+  bool get willApplyOnNextLaunch => outcome == PatchStageOutcome.staged;
+
+  @override
+  String toString() => outcome == PatchStageOutcome.staged
+      ? 'PatchStageResult(staged ${staged?.version}, applies on next launch)'
+      : outcome == PatchStageOutcome.failed
+          ? 'PatchStageResult(failed: ${error?.name} $message)'
+          : 'PatchStageResult(upToDate)';
+}

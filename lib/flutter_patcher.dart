@@ -242,6 +242,41 @@ class FlutterPatcher {
     }
   }
 
+  /// Recommended default update flow: check, then **stage** any new patch for the
+  /// next cold start. Call this once at startup (e.g. right after `runApp`).
+  ///
+  /// This is the safe pattern for a long-running or safety-critical app: the
+  /// download and verification happen off the UI isolate (native worker thread),
+  /// the kill switch is enforced transparently during the check, and a new patch
+  /// only takes effect on the **next launch** — the running isolate is never
+  /// hot-swapped mid-session. To force it sooner, prompt the user to restart;
+  /// don't kill the process from under them.
+  ///
+  /// Never throws — network/parse failures come back as
+  /// [PatchStageOutcome.failed]. [onProgress] streams download progress.
+  static Future<PatchStageResult> checkAndStage(
+    String url, {
+    Map<String, String>? headers,
+    Duration timeout = const Duration(seconds: 10),
+    void Function(PatchApplyProgress)? onProgress,
+  }) async {
+    if (_notAndroidGuard('checkAndStage')) return PatchStageResult.upToDate();
+    try {
+      final check = await checkUpdate(url, headers: headers, timeout: timeout);
+      final patch = check.patch;
+      if (!check.hasUpdate || patch == null) return PatchStageResult.upToDate();
+      final res = await applyPatch(patch, onProgress: onProgress);
+      if (res.ok) return PatchStageResult.stagedPatch(patch);
+      return PatchStageResult.failure(
+        res.error ?? PatchApplyError.unknown,
+        res.message,
+      );
+    } catch (e, s) {
+      _log('checkAndStage failed: $e', s);
+      return PatchStageResult.failure(PatchApplyError.network, e.toString());
+    }
+  }
+
   /// Downloads, verifies, and installs [patchInfo]'s payload.
   ///
   /// The payload can be either a complete `libapp.so` or a v2 `patch.zip`.
