@@ -52,6 +52,29 @@ Admin (used by the dashboard):
 - `FP_SIGNING_SEED` (required) — Ed25519 seed; its public key is what the app trusts.
 - `PORT` (default 8090) · `FP_DATA_DIR` (default `./data`) · `PUBLIC_URL` (override the payload base URL behind a proxy).
 
+## Deploy to Railway
+
+A `Dockerfile` + `railway.json` are included.
+
+1. **New Project → Deploy from GitHub**, pick the fork, and set the service
+   **Root Directory** to `server` (so Railway builds this folder).
+2. It auto-detects the Dockerfile. Health check is `/health`.
+3. **Variables** → add `FP_SIGNING_SEED`. Generate one locally with
+   `npm run keygen` (or `docker run --rm <image> npm run keygen`) and copy the
+   seed; the printed public key goes into the app's `FlutterPatcher.init`.
+4. Railway injects `PORT` automatically — no need to set it.
+5. **Persistence:** add a **Volume** mounted at `/data` (the image already points
+   `FP_DATA_DIR=/data` there). Without a volume, uploaded patches + config reset
+   on every redeploy.
+6. Point the app at `https://<your-app>.up.railway.app/check`.
+
+Build/run the image locally to test:
+
+```bash
+docker build -t fp-server ./server
+docker run --rm -p 8090:8090 -e FP_SIGNING_SEED=<seed> fp-server
+```
+
 ## Not included (intentionally)
 
 Auth on the admin API, TLS, and a database — add these for real deployments.

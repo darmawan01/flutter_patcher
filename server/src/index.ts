@@ -26,6 +26,9 @@ const telemetry: unknown[] = [];
 const app = express();
 app.use(express.json());
 
+// Health check (for Railway / load balancers).
+app.get('/health', (_req, res) => res.json({ ok: true }));
+
 function baseUrl(req: express.Request): string {
   return process.env.PUBLIC_URL || `${req.protocol}://${req.get('host')}`;
 }
