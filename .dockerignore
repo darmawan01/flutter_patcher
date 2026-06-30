@@ -1,0 +1,19 @@
+# Keep the build context small when building the server from the repo root.
+# (The Dockerfile only COPYs server/, but the daemon still receives the context.)
+build/
+android/
+example/
+doc/
+docs/
+test/
+lib/
+bin/
+.dart_tool/
+dist/
+**/build/
+**/.gradle/
+**/.cxx/
+*.apk
+.git/
+server/node_modules/
+server/data/

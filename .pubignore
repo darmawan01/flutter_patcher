@@ -24,6 +24,9 @@ dist/
 
 # Reference OTA server + dashboard (Node/TS app, not part of the Dart package)
 server/
+# Deploy files for the reference server (not part of the Dart package)
+Dockerfile
+.dockerignore
 
 # Local test fixtures used during development (the example bundles its own under example/assets)
 example/tools/
