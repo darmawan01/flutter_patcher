@@ -1,7 +1,7 @@
 name: CI
 
-# Authored but not yet executed in CI — validate on the first push and adjust the
-# Flutter/Java versions to match your toolchain.
+# Runs the Dart, server, and Android suites on every push/PR. Adjust the
+# Flutter/Java/Node versions to match your toolchain if needed.
 
 on:
   push:
@@ -20,8 +20,25 @@ jobs:
       - run: flutter --version
       - run: flutter pub get
       - run: flutter analyze lib bin
-      - name: Dart unit tests (CLI signing, etc.)
-        run: flutter test || echo "no Dart tests yet"
+      - name: Dart unit tests (CLI, signing, delta)
+        run: flutter test
+
+  server:
+    name: Server (typecheck + tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - run: npm ci
+        working-directory: server
+      - run: npm run typecheck
+        working-directory: server
+      - run: npm test
+        working-directory: server
 
   android-unit:
     name: Android unit tests (JVM)
