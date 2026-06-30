@@ -8,11 +8,13 @@ import 'package:flutter/widgets.dart';
 import 'src/blacklist.dart';
 import 'src/boot_diagnostic.dart';
 import 'src/io_stub.dart' if (dart.library.io) 'src/io.dart' as platform_io;
+import 'src/patch_event.dart';
 import 'src/patch_info.dart';
 import 'src/patcher_channel.dart';
 
 export 'src/blacklist.dart';
 export 'src/boot_diagnostic.dart';
+export 'src/patch_event.dart';
 export 'src/patch_info.dart';
 
 /// Android-only Flutter hot-update entrypoint.
@@ -42,6 +44,17 @@ class FlutterPatcher {
   static bool _inited = false;
   static bool _firstFrameReported = false;
   static bool _bootReported = false;
+  static void Function(PatchEvent)? _onEvent;
+
+  static void _emit(PatchEvent event) {
+    final sink = _onEvent;
+    if (sink == null) return;
+    try {
+      sink(event);
+    } catch (e, s) {
+      _log('onEvent sink threw (ignored): $e', s);
+    }
+  }
   static bool _bootErrorReported = false;
   static bool _nonAndroidWarned = false;
 
@@ -120,6 +133,10 @@ class FlutterPatcher {
   /// Flutter version.
   ///
   /// [verifyAfter] is the post-first-frame Dart error watch window.
+  ///
+  /// [onEvent] is an optional telemetry sink. The SDK emits [PatchEvent]s for the
+  /// previous cold start's decision (crash attribution), apply start/finish, and
+  /// staging — forward them to your crash reporter/analytics. It must not throw.
   static Future<void> init({
     String publicKeyBase64 = '',
     List<String> publicKeysBase64 = const [],
@@ -130,7 +147,9 @@ class FlutterPatcher {
     List<String> loaderFieldCandidates = const ['flutterLoader'],
     bool loaderFallbackHeuristic = false,
     Duration verifyAfter = const Duration(seconds: 5),
+    void Function(PatchEvent)? onEvent,
   }) async {
+    _onEvent = onEvent;
     if (_notAndroidGuard('init')) return;
     if (_inited) return;
     _inited = true;
@@ -163,6 +182,23 @@ class FlutterPatcher {
     }
 
     _BootVerifier.start();
+
+    // Surface the previous cold start's decision to telemetry (crash attribution
+    // for a patch that tripped the breaker shows up here). Fire-and-forget.
+    if (_onEvent != null) {
+      unawaited(lastBootDiagnostic.then((d) {
+        if (d != null) {
+          _emit(PatchEvent(
+            type: PatchEventType.boot,
+            version: d.patchVersion,
+            boot: d,
+            message: d.message,
+          ));
+        }
+      }).catchError((Object e) {
+        _log('boot telemetry failed: $e');
+      }));
+    }
   }
 
   /// Clears the "crashed before first frame" signal once the UI renders.
@@ -266,7 +302,14 @@ class FlutterPatcher {
       final patch = check.patch;
       if (!check.hasUpdate || patch == null) return PatchStageResult.upToDate();
       final res = await applyPatch(patch, onProgress: onProgress);
-      if (res.ok) return PatchStageResult.stagedPatch(patch);
+      if (res.ok) {
+        _emit(PatchEvent(
+          type: PatchEventType.staged,
+          version: patch.version,
+          patchNumber: patch.patchNumber,
+        ));
+        return PatchStageResult.stagedPatch(patch);
+      }
       // Not being in the rollout slice isn't a failure — nothing to do this round.
       if (res.error == PatchApplyError.notInRollout) {
         return PatchStageResult.upToDate();
@@ -309,11 +352,33 @@ class FlutterPatcher {
     if (onProgress != null) {
       sub = applyProgress.listen(onProgress);
     }
+    _emit(PatchEvent(
+      type: PatchEventType.applyStarted,
+      version: patchInfo.version,
+      patchNumber: patchInfo.patchNumber,
+    ));
     try {
       final native = await PatcherChannel.applyPatch(patchInfo.toJson());
-      return PatchApplyResult.fromNative(native);
+      final result = PatchApplyResult.fromNative(native);
+      _emit(PatchEvent(
+        type: PatchEventType.applyFinished,
+        version: patchInfo.version,
+        patchNumber: patchInfo.patchNumber,
+        ok: result.ok,
+        error: result.error,
+        message: result.message,
+      ));
+      return result;
     } catch (e, s) {
       _log('applyPatch failed: $e', s);
+      _emit(PatchEvent(
+        type: PatchEventType.applyFinished,
+        version: patchInfo.version,
+        patchNumber: patchInfo.patchNumber,
+        ok: false,
+        error: PatchApplyError.unknown,
+        message: e.toString(),
+      ));
       return PatchApplyResult.failure(PatchApplyError.unknown, e.toString());
     } finally {
       await sub?.cancel();
