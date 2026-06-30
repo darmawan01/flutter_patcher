@@ -22,6 +22,9 @@ example/android/local.properties
 # Pre-built demo APKs / .so artifacts under repo root
 dist/
 
+# Reference OTA server + dashboard (Node/TS app, not part of the Dart package)
+server/
+
 # Local test fixtures used during development (the example bundles its own under example/assets)
 example/tools/
 

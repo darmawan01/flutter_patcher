@@ -44,6 +44,7 @@ If this project helps your Flutter release workflow, please star it.
 - [Security hardening guide](docs/security-hardening.md) — threat model + every knob
 - [Compatibility matrix](docs/compatibility.md) — API levels, ABIs, what a patch can change
 - [Why iOS is out of scope](docs/ios-out-of-scope.md)
+- [Reference server + control room](server/README.md) — self-hosted OTA endpoint + dashboard (signs manifests, drives rollout %/channel + the kill switch, collects telemetry)
 
 ---
 
