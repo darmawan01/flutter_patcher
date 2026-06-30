@@ -1,5 +1,60 @@
 > Chinese version: [CHANGELOG-zh.md](CHANGELOG-zh.md)
 
+## 0.2.0
+
+Hardening + self-hosted server/console fork. Verified end-to-end against a live
+deployment (apply, staged rollout, kill-switch rollback) on an emulator.
+
+### Security & integrity
+
+- Ed25519 signature verification via BouncyCastle on device, byte-compatible with
+  the Dart CLI and Node server (RFC 8032). Fixes the API 33/35 provider issue.
+- SHA-256 signed manifests with a TUF-style canonical format (v1/v2) shared across
+  all three languages; monotonic `patchNumber` downgrade protection.
+- Signed kill switch (server-issued, signature-verified rollback list) that reverts
+  a device to its built-in build on the next check.
+- Any-of-N trusted keys for rotation; HTTPS-required downloads with optional SPKI
+  pinning; strict public-key length checks.
+
+### Resilience
+
+- Crash-loop circuit breaker (boot token + watchdog) that auto-rolls-back and
+  blacklists a patch that crashes on boot.
+- Base-binary drift guard so a patch won't apply onto a different same-versionCode base.
+
+### Distribution
+
+- Multi-ABI packaging; rsync-style **binary delta** patches (`pack --from-apk`),
+  self-verified and sha256-checked on device.
+- Staged percentage rollouts (deterministic per-install bucketing) and **channels**
+  (stable/beta/staging), each with its own active patch + rollout.
+
+### Observability
+
+- `PatchEvent` telemetry hook with `toJson()` and an opt-in per-install `installId`
+  (shared with rollout bucketing) for distinct-device adoption.
+
+### Tooling (CLI)
+
+- `init` now auto-wires `setupPatcher()` into `main()`; `pack`, `keygen`, `doctor`
+  (+ `doctor --project` to validate app wiring), and a `mock_server`.
+- New `release` (pack + upload + make-live in one command) and `status` (what the
+  server is serving). All CLIs exit non-zero on failure.
+
+### Reference server + console (`server/`)
+
+- Self-hosted Node/TypeScript server that signs manifests on the fly and serves
+  patches with CDN-friendly caching + range support.
+- Embedded control-room dashboard: per-channel rollout, signed kill switch,
+  per-patch detail (signed `/check` preview), applies-over-time, distinct-device
+  adoption, **rollout auto-halt** (freezes a rollout when the failure rate spikes),
+  and optional admin auth (`FP_ADMIN_TOKEN`).
+
+### Tests & CI
+
+- Server test suite (signing, store, auto-halt, endpoint integration) and CI that
+  runs the Dart, server, and Android suites on every push.
+
 ## 0.1.3
 
 ### Added
