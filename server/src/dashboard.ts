@@ -125,6 +125,13 @@ export function dashboardHtml(): string {
   .filters .f { font-size:12px; padding:5px 11px; border-radius:999px; background:var(--panel2); border:1px solid var(--line); color:var(--muted); cursor:pointer; }
   .filters .f.on { background:rgba(91,140,255,.14); color:var(--accent2); border-color:rgba(91,140,255,.3); }
   .muted { color:var(--muted); }
+  .chans { display:flex; gap:10px; flex-wrap:wrap; }
+  .chan { display:flex; flex-direction:column; align-items:flex-start; gap:2px; background:var(--panel2); border:1px solid var(--line); color:var(--txt); border-radius:10px; padding:9px 14px; min-width:120px; }
+  .chan b { font-size:13px; font-weight:620; }
+  .chan span { font-size:11.5px; color:var(--muted); font-variant-numeric:tabular-nums; }
+  .chan.on { border-color:var(--accent); background:rgba(91,140,255,.12); }
+  .chan.on b { color:var(--accent2); }
+  .chan.add { color:var(--muted); border-style:dashed; justify-content:center; align-items:center; font-size:12.5px; }
   .adopt { display:flex; align-items:center; gap:8px; min-width:120px; }
   .adopt .ab { height:6px; flex:1; border-radius:999px; background:var(--panel2); overflow:hidden; }
   .adopt .ab > i { display:block; height:100%; background:var(--accent); }
@@ -185,6 +192,12 @@ export function dashboardHtml(): string {
       </div>
 
       <div class="grid metrics" id="metrics" style="margin-bottom:16px"></div>
+
+      <div class="card" style="margin-bottom:16px">
+        <h2>Channels</h2>
+        <div class="chans" id="channels"></div>
+        <div class="muted" style="font-size:12px;margin-top:10px">Pick a channel to edit its active patch + rollout below. Devices select one with <code>/check?channel=&lt;name&gt;</code>.</div>
+      </div>
 
       <div class="card" style="margin-bottom:16px">
         <h2 style="display:flex;align-items:center;justify-content:space-between">
@@ -333,6 +346,7 @@ const $ = (id) => document.getElementById(id);
 let state = { publicKey:'', patches:[], config:{ killed:[] }, telemetry:[] };
 let dirtyRollout = false;      // don't stomp the slider while the user drags
 let dirtyAH = false;           // ...nor the auto-halt fields while editing
+let selectedChannel = '';      // which channel the rollout card is editing ('' = default)
 let teleFilter = 'all';
 const DAY = 86400000;
 
@@ -375,16 +389,24 @@ function adoption(tel){
   return m;
 }
 
+function channelState(s, name){
+  const def = s.config.channel || '';
+  if (!name || name === def) return { activeVersion: s.config.activeVersion, rolloutPercent: s.config.rolloutPercent };
+  const c = (s.config.channels || {})[name];
+  return c ? { activeVersion: c.activeVersion, rolloutPercent: c.rolloutPercent } : { activeVersion: null, rolloutPercent: 100 };
+}
+
 function renderMetrics(s){
-  const active = s.patches.find(function(p){ return p.version === s.config.activeVersion; });
+  const cs = channelState(s, selectedChannel);
+  const active = s.patches.find(function(p){ return p.version === cs.activeVersion; });
   const since = Date.now() - DAY;
   let ap24=0, fail24=0, staged24=0;
   s.telemetry.forEach(function(t){ if(t.at<since) return; const e=t.event||{}; const ty=etype(e);
     if(ty==='applyFinished'){ if(e.ok) ap24++; else fail24++; } if(ty==='staged') staged24++; });
-  $('chip-active').textContent = active ? active.version + ' · #' + active.patchNumber : 'none';
+  $('chip-active').textContent = (selectedChannel ? selectedChannel+': ' : '') + (active ? active.version + ' · #' + active.patchNumber : 'none');
   const cards = [
     ['Active patch', active ? esc(active.version) : '—', active ? '#'+active.patchNumber+' · vc '+active.targetVersionCode : 'nothing live', 'accent'],
-    ['Rollout', s.config.rolloutPercent + '<small>%</small>', s.config.channel ? 'channel '+esc(s.config.channel) : 'all devices', ''],
+    ['Rollout', cs.rolloutPercent + '<small>%</small>', selectedChannel ? 'channel '+esc(selectedChannel) : 'default channel', ''],
     ['Patches', String(s.patches.length), s.config.killed.length+' killed', ''],
     ['Applies 24h', String(ap24), staged24+' staged', 'good'],
     ['Failures 24h', String(fail24), fail24 ? 'check telemetry' : 'all clear', fail24 ? 'bad' : ''],
@@ -393,6 +415,22 @@ function renderMetrics(s){
     return '<div class="metric '+c[3]+'"><div class="k">'+c[0]+'</div><div class="v">'+c[1]+'</div><div class="d">'+c[2]+'</div></div>';
   }).join('');
 }
+
+function renderChannels(s){
+  const def = s.config.channel || '';
+  const names = [def].concat(Object.keys(s.config.channels || {}));
+  $('channels').innerHTML = names.map(function(n){
+    const cs = channelState(s, n);
+    const sub = cs.activeVersion ? esc(cs.activeVersion) + ' · ' + cs.rolloutPercent + '%' : 'none';
+    return '<button class="chan' + (n === selectedChannel ? ' on' : '') + '" onclick="selectChannel(\\'' + esc(n) + '\\')">'
+      + '<b>' + esc(n || 'default') + '</b><span>' + sub + '</span></button>';
+  }).join('') + '<button class="chan add" onclick="addChannel()">+ channel</button>';
+}
+window.selectChannel = function(name){ selectedChannel = name; dirtyRollout = false; go('overview'); refresh(); };
+window.addChannel = function(){
+  const n = (prompt('New channel name (e.g. beta, staging):') || '').trim();
+  if (n) { selectedChannel = n; dirtyRollout = false; refresh(); }
+};
 
 function renderFeed(s){
   const items = s.telemetry.slice(0, 8);
@@ -486,14 +524,15 @@ async function refresh() {
   if (!s.config.killed) s.config.killed = [];
   state = s;
 
-  // rollout controls
+  // rollout controls — reflect the channel the card is currently editing
+  const cs = channelState(s, selectedChannel);
   const sel = $('active');
   sel.innerHTML = '<option value="">(none)</option>' + s.patches.map(function(p){ return '<option value="'+esc(p.version)+'">'+esc(p.version)+' (#'+p.patchNumber+')</option>'; }).join('');
-  sel.value = s.config.activeVersion || '';
-  $('channel').value = s.config.channel || '';
-  if (!dirtyRollout) { $('rollout').value = s.config.rolloutPercent; $('rollout-val').textContent = s.config.rolloutPercent; }
+  sel.value = cs.activeVersion || '';
+  if (document.activeElement !== $('channel')) $('channel').value = selectedChannel;
+  if (!dirtyRollout) { $('rollout').value = cs.rolloutPercent; $('rollout-val').textContent = cs.rolloutPercent; }
 
-  renderMetrics(s); renderFeed(s); renderSpark(s); renderPatches(s); renderTelemetry(s); renderSettings(s); renderAutoHalt(s);
+  renderMetrics(s); renderFeed(s); renderSpark(s); renderChannels(s); renderPatches(s); renderTelemetry(s); renderSettings(s); renderAutoHalt(s);
   if (drawerVersion) openDetail(drawerVersion, true); // keep an open drawer fresh
 }
 
@@ -555,11 +594,13 @@ document.addEventListener('keydown', function(e){ if(e.key==='Escape') closeDeta
 function setRollout(v){ dirtyRollout=true; $('rollout').value=v; $('rollout-val').textContent=v; }
 window.setRollout = setRollout;
 $('rollout').addEventListener('input', function(e){ dirtyRollout=true; $('rollout-val').textContent = e.target.value; });
+$('channel').addEventListener('change', function(){ selectChannel($('channel').value.trim()); });
 $('save-config').onclick = async function(){
+  selectedChannel = $('channel').value.trim();
   try {
     await api('/api/config', { method:'POST', headers:{'content-type':'application/json'},
-      body: JSON.stringify({ activeVersion: $('active').value || null, rolloutPercent: +$('rollout').value, channel: $('channel').value }) });
-    dirtyRollout=false; toast('Rollout applied'); refresh();
+      body: JSON.stringify({ activeVersion: $('active').value || null, rolloutPercent: +$('rollout').value, channel: selectedChannel }) });
+    dirtyRollout=false; toast(selectedChannel ? 'Applied to "'+selectedChannel+'"' : 'Rollout applied'); refresh();
   } catch(e){ toast(e.message, true); }
 };
 $('active').onchange = function(){ $('save-config').click(); };

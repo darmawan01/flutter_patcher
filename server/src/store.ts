@@ -29,12 +29,29 @@ export interface HaltEvent {
   rate: number;
 }
 
-export interface Config {
+export interface ChannelState {
   activeVersion: string | null;
   rolloutPercent: number; // 0..100
-  channel: string;
-  killed: number[]; // rolled-back patchNumbers
+}
+
+export interface Config {
+  // The default channel (served when /check is hit with no ?channel, or with the
+  // default's name). Kept top-level for byte-compat with single-channel deploys.
+  activeVersion: string | null;
+  rolloutPercent: number; // 0..100
+  channel: string; // the default channel's name (usually '')
+  // Additional named channels (beta, staging, …), each with its own active patch
+  // + rollout. The device selects one via /check?channel=<name>.
+  channels: Record<string, ChannelState>;
+  killed: number[]; // rolled-back patchNumbers (global)
   autoHalt: AutoHalt;
+}
+
+/** Resolved view of one channel, ready to sign + serve. */
+export interface ResolvedChannel {
+  channel: string;
+  activeVersion: string | null;
+  rolloutPercent: number;
 }
 
 interface Db {
@@ -60,6 +77,7 @@ const DEFAULT_DB: Db = {
     activeVersion: null,
     rolloutPercent: 100,
     channel: '',
+    channels: {},
     killed: [],
     autoHalt: { ...DEFAULT_AUTO_HALT },
   },
@@ -79,9 +97,15 @@ export class Store {
     if (existsSync(DB_FILE)) {
       try {
         const loaded = JSON.parse(readFileSync(DB_FILE, 'utf8'));
+        const lc = loaded.config ?? {};
         this.db = {
           patches: Array.isArray(loaded.patches) ? loaded.patches : [],
-          config: { ...DEFAULT_DB.config, ...(loaded.config ?? {}), autoHalt: { ...DEFAULT_AUTO_HALT, ...(loaded.config?.autoHalt ?? {}) } },
+          config: {
+            ...DEFAULT_DB.config,
+            ...lc,
+            channels: lc.channels && typeof lc.channels === 'object' ? lc.channels : {},
+            autoHalt: { ...DEFAULT_AUTO_HALT, ...(lc.autoHalt ?? {}) },
+          },
         };
       } catch (e) {
         console.error(`[store] db.json is unreadable, starting from defaults: ${(e as Error).message}`);
@@ -109,6 +133,39 @@ export class Store {
 
   get config(): Config {
     return this.db.config;
+  }
+
+  /** Name of the default channel (served when no ?channel is given). */
+  get defaultChannel(): string {
+    return this.db.config.channel || '';
+  }
+
+  /** Every channel name with state, default first. */
+  channelNames(): string[] {
+    return [this.defaultChannel, ...Object.keys(this.db.config.channels)];
+  }
+
+  /** Resolve a requested channel to its active patch + rollout, or null if the
+   *  channel exists but isn't configured. The default channel always resolves. */
+  resolveChannel(requested: string): ResolvedChannel | null {
+    const def = this.defaultChannel;
+    if (!requested || requested === def) {
+      return { channel: def, activeVersion: this.db.config.activeVersion, rolloutPercent: this.db.config.rolloutPercent };
+    }
+    const c = this.db.config.channels[requested];
+    if (!c) return null;
+    return { channel: requested, activeVersion: c.activeVersion, rolloutPercent: c.rolloutPercent };
+  }
+
+  /** Set a channel's active version / rollout. Empty name = the default channel. */
+  setChannelState(name: string, partial: Partial<ChannelState>) {
+    if (!name || name === this.defaultChannel) {
+      this.setConfig(partial as Partial<Config>);
+      return;
+    }
+    const cur = this.db.config.channels[name] ?? { activeVersion: null, rolloutPercent: 100 };
+    this.db.config.channels[name] = { ...cur, ...partial };
+    this.persist();
   }
 
   upsertPatch(rec: PatchRecord) {

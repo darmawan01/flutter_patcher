@@ -34,22 +34,21 @@ let lastHalt: HaltEvent | null = null;
 // so it resets with the process — fine for a reference server.
 function evaluateAutoHalt(): void {
   const cfg = store.config;
-  const active = store.activePatch();
-  const d = evaluateHalt(
-    cfg.autoHalt,
-    cfg.rolloutPercent,
-    active?.patchNumber ?? null,
-    telemetry,
-    Date.now(),
-  );
-  if (!d.halt || !active) return;
+  // Each channel has its own active patch + rollout — evaluate them all.
+  for (const name of store.channelNames()) {
+    const resolved = store.resolveChannel(name);
+    const active = resolved?.activeVersion ? store.patch(resolved.activeVersion) : undefined;
+    if (!resolved || !active) continue;
+    const d = evaluateHalt(cfg.autoHalt, resolved.rolloutPercent, active.patchNumber, telemetry, Date.now());
+    if (!d.halt) continue;
 
-  store.setConfig({ rolloutPercent: 0 });
-  lastHalt = { at: Date.now(), version: active.version, patchNumber: active.patchNumber, ok: d.ok, fail: d.fail, rate: d.rate };
-  console.warn(
-    `[auto-halt] froze rollout of ${active.version} #${active.patchNumber}: ` +
-      `${d.fail}/${d.ok + d.fail} applies failed (${Math.round(d.rate * 100)}%)`,
-  );
+    store.setChannelState(name, { rolloutPercent: 0 });
+    lastHalt = { at: Date.now(), version: active.version, patchNumber: active.patchNumber, ok: d.ok, fail: d.fail, rate: d.rate };
+    console.warn(
+      `[auto-halt] froze ${name || 'default'} rollout of ${active.version} #${active.patchNumber}: ` +
+        `${d.fail}/${d.ok + d.fail} applies failed (${Math.round(d.rate * 100)}%)`,
+    );
+  }
 }
 
 function clampInt(v: unknown, lo: number, hi: number, fallback: number): number {
@@ -105,9 +104,11 @@ app.get('/check', (req, res) => {
   const killed = cfg.killed;
   const rolledBackSignature = killed.length ? signer.signRollback(killed) : '';
 
-  const active = store.activePatch();
-  // Don't offer a killed patch; still send the kill list so devices remove it.
-  if (!active || killed.includes(active.patchNumber)) {
+  // Pick the channel the device asked for (default channel when absent).
+  const resolved = store.resolveChannel(String(req.query.channel ?? ''));
+  const active = resolved?.activeVersion ? store.patch(resolved.activeVersion) : undefined;
+  // Don't offer a killed/absent patch; still send the kill list so devices remove it.
+  if (!resolved || !active || killed.includes(active.patchNumber)) {
     return res.json({ hasUpdate: false, rolledBack: killed, rolledBackSignature });
   }
 
@@ -116,8 +117,8 @@ app.get('/check', (req, res) => {
     patchNumber: active.patchNumber,
     targetVersionCode: active.targetVersionCode,
     sha256: active.sha256,
-    rolloutPercent: cfg.rolloutPercent,
-    channel: cfg.channel,
+    rolloutPercent: resolved.rolloutPercent,
+    channel: resolved.channel,
   });
 
   res.json({
@@ -128,8 +129,8 @@ app.get('/check', (req, res) => {
       targetVersionCode: active.targetVersionCode,
       sha256: active.sha256,
       signature,
-      rolloutPercent: cfg.rolloutPercent,
-      channel: cfg.channel,
+      rolloutPercent: resolved.rolloutPercent,
+      channel: resolved.channel,
       patchUrl: `${baseUrl(req)}/payload/${encodeURIComponent(active.version)}`,
     },
     rolledBack: killed,
@@ -231,24 +232,31 @@ app.post(
 
 app.post('/api/config', requireAdmin, (req, res) => {
   const { activeVersion, rolloutPercent, channel, autoHalt } = req.body ?? {};
-  const patch: Record<string, unknown> = {};
-  if (activeVersion !== undefined) patch.activeVersion = activeVersion;
+
+  // activeVersion / rolloutPercent apply to the targeted channel (default when blank).
+  const chPatch: Record<string, unknown> = {};
+  if (activeVersion !== undefined) chPatch.activeVersion = activeVersion;
   if (rolloutPercent !== undefined) {
-    patch.rolloutPercent = Math.max(0, Math.min(100, Number(rolloutPercent)));
+    chPatch.rolloutPercent = Math.max(0, Math.min(100, Number(rolloutPercent)));
   }
-  if (channel !== undefined) patch.channel = String(channel);
+  if (Object.keys(chPatch).length) {
+    store.setChannelState(channel !== undefined ? String(channel) : '', chPatch);
+  }
+
+  // autoHalt is global.
   if (autoHalt !== undefined && autoHalt !== null) {
     const cur = store.config.autoHalt;
     const rate = Number(autoHalt.failureRate);
-    patch.autoHalt = {
-      enabled: typeof autoHalt.enabled === 'boolean' ? autoHalt.enabled : cur.enabled,
-      windowMinutes: clampInt(autoHalt.windowMinutes, 1, 1440, cur.windowMinutes),
-      minSamples: clampInt(autoHalt.minSamples, 1, 100000, cur.minSamples),
-      minFailures: clampInt(autoHalt.minFailures, 1, 100000, cur.minFailures),
-      failureRate: Number.isFinite(rate) ? Math.max(0, Math.min(1, rate)) : cur.failureRate,
-    };
+    store.setConfig({
+      autoHalt: {
+        enabled: typeof autoHalt.enabled === 'boolean' ? autoHalt.enabled : cur.enabled,
+        windowMinutes: clampInt(autoHalt.windowMinutes, 1, 1440, cur.windowMinutes),
+        minSamples: clampInt(autoHalt.minSamples, 1, 100000, cur.minSamples),
+        minFailures: clampInt(autoHalt.minFailures, 1, 100000, cur.minFailures),
+        failureRate: Number.isFinite(rate) ? Math.max(0, Math.min(1, rate)) : cur.failureRate,
+      },
+    });
   }
-  store.setConfig(patch);
   res.json({ ok: true, config: store.config });
 });
 
@@ -267,13 +275,17 @@ app.get('/api/patches/:version/preview', requireAdmin, (req, res) => {
   if (!rec) return res.status(404).json({ error: 'unknown version' });
   const cfg = store.config;
   const killed = cfg.killed.includes(rec.patchNumber);
+  // If this patch is the active one on some channel, preview as that channel
+  // serves it; otherwise show it under the default channel's rollout.
+  const onChannel = store.channelNames().find((n) => store.resolveChannel(n)?.activeVersion === rec.version);
+  const resolved = onChannel != null ? store.resolveChannel(onChannel)! : store.resolveChannel('')!;
   const signature = signer.signManifestV2({
     version: rec.version,
     patchNumber: rec.patchNumber,
     targetVersionCode: rec.targetVersionCode,
     sha256: rec.sha256,
-    rolloutPercent: cfg.rolloutPercent,
-    channel: cfg.channel,
+    rolloutPercent: resolved.rolloutPercent,
+    channel: resolved.channel,
   });
   res.json({
     version: rec.version,
@@ -282,15 +294,16 @@ app.get('/api/patches/:version/preview', requireAdmin, (req, res) => {
     sha256: rec.sha256,
     abis: rec.abis,
     uploadedAt: rec.uploadedAt,
-    active: cfg.activeVersion === rec.version,
+    active: onChannel != null,
+    activeChannel: onChannel ?? null,
     killed,
     signedManifest: {
       version: rec.version,
       patchNumber: rec.patchNumber,
       targetVersionCode: rec.targetVersionCode,
       sha256: rec.sha256,
-      rolloutPercent: cfg.rolloutPercent,
-      channel: cfg.channel,
+      rolloutPercent: resolved.rolloutPercent,
+      channel: resolved.channel,
       signature,
       patchUrl: `${baseUrl(req)}/payload/${encodeURIComponent(rec.version)}`,
     },

@@ -18,6 +18,7 @@ Future<int> main(List<String> argv) async {
 Future<int> _run(List<String> argv) async {
   final parser = ArgParser()
     ..addOption('server', abbr: 's', help: 'Server base URL (or a full /check URL).')
+    ..addOption('channel', help: 'Query a specific channel (default channel if omitted).')
     ..addOption('timeout', defaultsTo: '10', help: 'Request timeout in seconds.')
     ..addFlag('json', negatable: false, help: 'Print the raw /check JSON instead.')
     ..addFlag('help', abbr: 'h', negatable: false, help: 'Show help.');
@@ -40,7 +41,11 @@ Future<int> _run(List<String> argv) async {
     return 64;
   }
   final base = server.replaceAll(RegExp(r'/+$'), '');
-  final checkUrl = base.endsWith('/check') ? base : '$base/check';
+  var checkUrl = base.endsWith('/check') ? base : '$base/check';
+  final channel = (args['channel'] as String?)?.trim();
+  if (channel != null && channel.isNotEmpty) {
+    checkUrl = '$checkUrl?channel=${Uri.encodeQueryComponent(channel)}';
+  }
   final timeout = Duration(seconds: int.tryParse(args['timeout'] as String) ?? 10);
 
   final Map<String, dynamic> body;

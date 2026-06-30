@@ -110,6 +110,14 @@ Open the dashboard (`/`), drop `dist/patch.zip` + `dist/manifest.json`, then:
 
 The server signs the manifest on the fly — no re-packing when you change rollout.
 
+### Channels (stable / beta / staging)
+
+Each channel has its own active patch and rollout. A device picks one by adding
+`?channel=<name>` to its check URL (the default channel is served when omitted) —
+so a beta build ships with `…/check?channel=beta`. Set a channel's patch from the
+dashboard's **Channels** card, with `release --channel beta`, or check it with
+`status --channel beta`. The channel name is bound into the signed manifest.
+
 ## 5. Land it on the device
 
 Your app calls `setupPatcher()` at launch → it checks the server, verifies the

@@ -74,3 +74,40 @@ test('a non-array patches field is coerced to []', () => {
   const s = new Store();
   assert.deepEqual(s.state().patches, []);
 });
+
+test('fresh store has an empty channels map and resolves the default channel', () => {
+  const s = new Store();
+  assert.deepEqual(s.config.channels, {});
+  const def = s.resolveChannel('');
+  assert.deepEqual(def, { channel: '', activeVersion: null, rolloutPercent: 100 });
+});
+
+test('setChannelState writes named channels; default routes to top-level', () => {
+  const s = new Store();
+  s.setChannelState('', { activeVersion: 'd1', rolloutPercent: 90 }); // default
+  s.setChannelState('beta', { activeVersion: 'b1', rolloutPercent: 10 });
+  assert.equal(s.config.activeVersion, 'd1');
+  assert.equal(s.config.rolloutPercent, 90);
+  assert.deepEqual(s.config.channels.beta, { activeVersion: 'b1', rolloutPercent: 10 });
+  assert.deepEqual(s.resolveChannel('beta'), { channel: 'beta', activeVersion: 'b1', rolloutPercent: 10 });
+});
+
+test('resolveChannel returns null for an unknown channel', () => {
+  const s = new Store();
+  assert.equal(s.resolveChannel('does-not-exist'), null);
+});
+
+test('channelNames lists the default first', () => {
+  const s = new Store();
+  s.setChannelState('beta', { activeVersion: 'b1', rolloutPercent: 5 });
+  assert.deepEqual(s.channelNames(), ['', 'beta']);
+});
+
+test('an old db.json without channels is backfilled to {}', () => {
+  writeFileSync(
+    DB,
+    JSON.stringify({ patches: [], config: { activeVersion: 'v', rolloutPercent: 100, channel: '', killed: [] } }),
+  );
+  const s = new Store();
+  assert.deepEqual(s.config.channels, {});
+});
