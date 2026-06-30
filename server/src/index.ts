@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import express from 'express';
 import multer from 'multer';
 
+import { evaluateHalt } from './autohalt.js';
 import { Signer } from './signing.js';
 import { PATCH_DIR, Store, sha256OfFile } from './store.js';
 import type { HaltEvent } from './store.js';
@@ -33,33 +34,21 @@ let lastHalt: HaltEvent | null = null;
 // so it resets with the process — fine for a reference server.
 function evaluateAutoHalt(): void {
   const cfg = store.config;
-  const ah = cfg.autoHalt;
-  if (!ah?.enabled || cfg.rolloutPercent <= 0) return;
   const active = store.activePatch();
-  if (!active) return;
-
-  const since = Date.now() - ah.windowMinutes * 60_000;
-  let ok = 0;
-  let fail = 0;
-  for (const t of telemetry) {
-    if (t.at < since) continue;
-    const e = t.event;
-    const type = String(e?.type ?? '').replace('PatchEventType.', '');
-    if (type !== 'applyFinished' || e?.patchNumber !== active.patchNumber) continue;
-    if (e?.ok === false) fail++;
-    else if (e?.ok === true) ok++;
-  }
-
-  const total = ok + fail;
-  if (total < ah.minSamples || fail < ah.minFailures) return;
-  const rate = fail / total;
-  if (rate < ah.failureRate) return;
+  const d = evaluateHalt(
+    cfg.autoHalt,
+    cfg.rolloutPercent,
+    active?.patchNumber ?? null,
+    telemetry,
+    Date.now(),
+  );
+  if (!d.halt || !active) return;
 
   store.setConfig({ rolloutPercent: 0 });
-  lastHalt = { at: Date.now(), version: active.version, patchNumber: active.patchNumber, ok, fail, rate };
+  lastHalt = { at: Date.now(), version: active.version, patchNumber: active.patchNumber, ok: d.ok, fail: d.fail, rate: d.rate };
   console.warn(
     `[auto-halt] froze rollout of ${active.version} #${active.patchNumber}: ` +
-      `${fail}/${total} applies failed (${Math.round(rate * 100)}%)`,
+      `${d.fail}/${d.ok + d.fail} applies failed (${Math.round(d.rate * 100)}%)`,
   );
 }
 
