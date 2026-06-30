@@ -191,12 +191,27 @@ app.post(
     const version = String(manifest.version || '');
     const patchNumber = Number(manifest.patchNumber);
     const targetVersionCode = Number(manifest.targetVersionCode);
-    if (!version || !Number.isFinite(patchNumber) || !Number.isFinite(targetVersionCode)) {
-      return res
-        .status(400)
-        .json({ error: 'manifest needs version, patchNumber, targetVersionCode' });
+    const isNonNegInt = (n: number) => Number.isInteger(n) && n >= 0;
+    if (!version) {
+      return res.status(400).json({ error: 'manifest needs a version' });
     }
-    const dir = join(PATCH_DIR, version.replace(/[^A-Za-z0-9._-]/g, '_'));
+    if (version.length > 256) {
+      return res.status(400).json({ error: 'version is too long (max 256 chars)' });
+    }
+    if (!isNonNegInt(patchNumber) || !isNonNegInt(targetVersionCode)) {
+      return res.status(400).json({
+        error: 'patchNumber and targetVersionCode must be non-negative integers',
+      });
+    }
+    // Sanitized name must not collapse to empty (e.g. a version of only "/../").
+    const safeName = version.replace(/[^A-Za-z0-9._-]/g, '_');
+    if (!safeName.replace(/[._-]/g, '')) {
+      return res.status(400).json({ error: 'version has no usable filename characters' });
+    }
+    const abis = Array.isArray(manifest.abis)
+      ? manifest.abis.filter((a: unknown): a is string => typeof a === 'string')
+      : [];
+    const dir = join(PATCH_DIR, safeName);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     const file = join(dir, 'patch.zip');
     await writeFile(file, zip.buffer);
@@ -205,7 +220,7 @@ app.post(
       patchNumber,
       targetVersionCode,
       sha256: sha256OfFile(file),
-      abis: Array.isArray(manifest.abis) ? manifest.abis : [],
+      abis,
       file,
       uploadedAt: Date.now(),
     };
