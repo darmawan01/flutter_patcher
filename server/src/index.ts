@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -67,11 +68,33 @@ function clampInt(v: unknown, lo: number, hi: number, fallback: number): number 
   return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : fallback;
 }
 
+// Optional admin token. When set, it gates the dashboard/admin endpoints
+// (device-facing /check, /payload, /api/telemetry stay open). When unset the
+// admin surface is open — fine for local/dev, NOT for a public deployment.
+const ADMIN_TOKEN = process.env.FP_ADMIN_TOKEN || '';
+
+function safeEq(a: string, b: string): boolean {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  return ab.length === bb.length && timingSafeEqual(ab, bb);
+}
+
+function requireAdmin(req: express.Request, res: express.Response, next: express.NextFunction): void {
+  if (!ADMIN_TOKEN) return next();
+  const auth = req.get('authorization') || '';
+  const token = auth.startsWith('Bearer ') ? auth.slice(7) : req.get('x-admin-token') || '';
+  if (token && safeEq(token, ADMIN_TOKEN)) return next();
+  res.status(401).json({ error: 'admin token required' });
+}
+
 const app = express();
 // Behind a TLS-terminating proxy (Railway/Fly/Heroku/nginx), honor
 // X-Forwarded-Proto so req.protocol is 'https' and patchUrl is built as https.
 app.set('trust proxy', true);
 app.use(express.json());
+
+// Lets the dashboard know whether to show a login prompt (no secret leaked).
+app.get('/api/meta', (_req, res) => res.json({ authRequired: !!ADMIN_TOKEN }));
 
 // Health check (for Railway / load balancers).
 app.get('/health', (_req, res) => res.json({ ok: true }));
@@ -137,7 +160,7 @@ app.post('/api/telemetry', (req, res) => {
 
 // ---- Admin / dashboard endpoints --------------------------------------------
 
-app.get('/api/state', (_req, res) => {
+app.get('/api/state', requireAdmin, (_req, res) => {
   res.json({
     ...store.state(),
     publicKey: signer.publicKeySpkiBase64,
@@ -149,6 +172,7 @@ app.get('/api/state', (_req, res) => {
 // Upload a packed dist: patch.zip + manifest.json (from `flutter_patcher:pack`).
 app.post(
   '/api/patches',
+  requireAdmin,
   upload.fields([
     { name: 'patchzip', maxCount: 1 },
     { name: 'manifest', maxCount: 1 },
@@ -192,7 +216,7 @@ app.post(
   },
 );
 
-app.post('/api/config', (req, res) => {
+app.post('/api/config', requireAdmin, (req, res) => {
   const { activeVersion, rolloutPercent, channel, autoHalt } = req.body ?? {};
   const patch: Record<string, unknown> = {};
   if (activeVersion !== undefined) patch.activeVersion = activeVersion;
@@ -215,7 +239,7 @@ app.post('/api/config', (req, res) => {
   res.json({ ok: true, config: store.config });
 });
 
-app.post('/api/kill', (req, res) => {
+app.post('/api/kill', requireAdmin, (req, res) => {
   const killed = Array.isArray(req.body?.killed)
     ? req.body.killed.map((n: unknown) => Number(n)).filter(Number.isFinite)
     : [];
@@ -225,7 +249,7 @@ app.post('/api/kill', (req, res) => {
 
 // Preview the signed manifest a device would receive for ANY stored patch
 // (not just the active one) — powers the dashboard's per-patch detail drawer.
-app.get('/api/patches/:version/preview', (req, res) => {
+app.get('/api/patches/:version/preview', requireAdmin, (req, res) => {
   const rec = store.patch(req.params.version);
   if (!rec) return res.status(404).json({ error: 'unknown version' });
   const cfg = store.config;
@@ -267,4 +291,9 @@ app.listen(PORT, () => {
   console.log(`  dashboard:   http://localhost:${PORT}/`);
   console.log(`  device check: http://localhost:${PORT}/check`);
   console.log(`  public key:  ${signer.publicKeySpkiBase64}`);
+  console.log(
+    ADMIN_TOKEN
+      ? '  admin auth:  ON (dashboard requires FP_ADMIN_TOKEN)'
+      : '  admin auth:  OFF — set FP_ADMIN_TOKEN to lock down the dashboard for a public deploy',
+  );
 });

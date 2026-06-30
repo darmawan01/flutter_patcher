@@ -103,6 +103,14 @@ export function dashboardHtml(): string {
   .toast { position:fixed; bottom:22px; right:22px; background:var(--panel2); border:1px solid var(--line); border-left:3px solid var(--accent); padding:11px 16px; border-radius:10px; box-shadow:0 10px 36px rgba(0,0,0,.45); opacity:0; transform:translateY(8px); transition:.2s; z-index:30; max-width:380px; }
   .toast.show { opacity:1; transform:none; }
   .toast.err { border-left-color:var(--bad); }
+  /* admin lock overlay */
+  .loginwrap { position:fixed; inset:0; background:rgba(8,10,14,.92); backdrop-filter:blur(4px); display:none; align-items:center; justify-content:center; z-index:60; }
+  .loginwrap.show { display:flex; }
+  .logincard { background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:30px 28px; width:340px; max-width:90vw; text-align:center; box-shadow:0 30px 80px rgba(0,0,0,.6); }
+  .logincard h3 { margin:14px 0 6px; font-size:18px; }
+  .logincard input { width:100%; margin:16px 0 12px; text-align:center; }
+  .logincard button { width:100%; }
+  .logincard .err { color:#fca5a5; font-size:12.5px; min-height:16px; margin-top:10px; }
   .feed { display:flex; flex-direction:column; gap:0; }
   .feed .ev { display:flex; align-items:center; gap:11px; padding:9px 2px; border-bottom:1px solid var(--line); font-size:13px; }
   .feed .ev:last-child { border-bottom:0; }
@@ -254,7 +262,7 @@ export function dashboardHtml(): string {
 
     <!-- SETTINGS -->
     <section class="view" id="view-settings">
-      <div class="page-h"><h1>Settings</h1><div class="sub">keys, endpoints, kill switch</div></div>
+      <div class="page-h"><h1>Settings</h1><div class="sub">keys, endpoints, kill switch</div><div class="spacer"></div><button class="ghost mini" id="signout" style="display:none" onclick="signOut()">Sign out</button></div>
 
       <div class="card" style="margin-bottom:16px">
         <h2>Signing key — paste into the app</h2>
@@ -307,6 +315,16 @@ export function dashboardHtml(): string {
     </section>
   </main>
 </div>
+<div class="loginwrap" id="loginwrap">
+  <div class="logincard">
+    <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#5b8cff" stroke-width="1.6"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+    <h3>Console locked</h3>
+    <div class="muted" style="font-size:12.5px">Enter the admin token to continue.</div>
+    <input type="password" id="login-token" placeholder="Admin token" />
+    <button id="login-go">Unlock</button>
+    <div class="err" id="login-err"></div>
+  </div>
+</div>
 <div class="scrim" id="scrim" onclick="closeDetail()"></div>
 <aside class="drawer" id="drawer" aria-hidden="true"></aside>
 <div class="toast" id="toast"></div>
@@ -318,12 +336,22 @@ let dirtyAH = false;           // ...nor the auto-halt fields while editing
 let teleFilter = 'all';
 const DAY = 86400000;
 
+let adminToken = localStorage.getItem('fp_admin_token') || '';
 async function api(path, opts) {
+  opts = opts || {};
+  if (adminToken) opts.headers = Object.assign({}, opts.headers, { 'Authorization': 'Bearer ' + adminToken });
   const r = await fetch(path, opts);
+  if (r.status === 401) { showLogin(); throw new Error('admin token required'); }
   const isJson = (r.headers.get('content-type')||'').indexOf('json') >= 0;
   if (!r.ok && isJson) { const j = await r.json(); throw new Error(j.error || r.statusText); }
   return isJson ? r.json() : r.text();
 }
+function showLogin(){ const w=$('loginwrap'); if(!w.classList.contains('show')){ if(adminToken) $('login-err').textContent='That token was rejected.'; w.classList.add('show'); $('login-token').focus(); } }
+function hideLogin(){ $('loginwrap').classList.remove('show'); $('login-err').textContent=''; $('login-token').value=''; }
+function signIn(){ const t=$('login-token').value.trim(); if(!t) return; adminToken=t; localStorage.setItem('fp_admin_token',t); hideLogin(); refresh(); }
+window.signOut = function(){ adminToken=''; localStorage.removeItem('fp_admin_token'); showLogin(); };
+$('login-go').onclick = signIn;
+$('login-token').addEventListener('keydown', function(e){ if(e.key==='Enter') signIn(); });
 function toast(msg, err) {
   const t = $('toast'); t.textContent = msg; t.className = 'toast show' + (err ? ' err' : '');
   clearTimeout(t._t); t._t = setTimeout(function(){ t.className = 'toast'; }, 2600);
@@ -411,6 +439,7 @@ function renderTelemetry(s){
 window.setFilter = function(f){ teleFilter=f; renderTelemetry(state); };
 
 function renderSettings(s){
+  $('signout').style.display = adminToken ? 'inline-block' : 'none';
   $('pubkey').textContent = s.publicKey;
   $('checkurl').textContent = location.origin + '/check';
   const su = $('self-url'); if (su) su.textContent = location.origin;
@@ -447,8 +476,12 @@ function renderAutoHalt(s){
 
 async function refresh() {
   let s;
-  try { s = await api('/api/state'); $('dot').className='dot'; $('status').textContent='online · '+new Date().toLocaleTimeString(); }
-  catch { $('dot').className='dot off'; $('status').textContent='offline'; return; }
+  try { s = await api('/api/state'); $('dot').className='dot'; $('status').textContent='online · '+new Date().toLocaleTimeString(); hideLogin(); }
+  catch(e) {
+    if ($('loginwrap').classList.contains('show')) { $('dot').className='dot off'; $('status').textContent='locked'; }
+    else { $('dot').className='dot off'; $('status').textContent='offline'; }
+    return;
+  }
   if (!s.config) s.config = { killed:[] };
   if (!s.config.killed) s.config.killed = [];
   state = s;

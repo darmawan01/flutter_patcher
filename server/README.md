@@ -50,6 +50,7 @@ Admin (used by the dashboard):
 ## Config
 
 - `FP_SIGNING_SEED` (required) — Ed25519 seed; its public key is what the app trusts.
+- `FP_ADMIN_TOKEN` (optional, **set it for any public deploy**) — gates the dashboard and admin endpoints. Unlock the console with it once; the device-facing `/check`, `/payload`, and `/api/telemetry` stay open. Leave unset only for local/dev.
 - `PORT` (default 8090) · `FP_DATA_DIR` (default `./data`) · `PUBLIC_URL` (override the payload base URL behind a proxy).
 
 ## Two separate things: deploy the SERVER once, then UPLOAD patches
