@@ -51,5 +51,6 @@ internal object ApplyErrorCode {
     const val ASSET_PACKAGE_INVALID = "ASSET_PACKAGE_INVALID"
     const val IO_ERROR = "IO_ERROR"
     const val INSECURE_TRANSPORT = "INSECURE_TRANSPORT"
+    const val DOWNGRADE_REJECTED = "DOWNGRADE_REJECTED"
     const val UNKNOWN = "UNKNOWN"
 }

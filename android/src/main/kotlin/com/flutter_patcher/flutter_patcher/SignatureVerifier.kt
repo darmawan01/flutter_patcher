@@ -62,10 +62,11 @@ internal object SignatureVerifier {
      * - API < 33 且 strictSignature=false → 跳过返回 true
      * - API >= 33 → 真实 Ed25519 验签
      *
-     * @param hashHexLower 已匹配并**小写化**的 SHA-256 hex 字符串（作为签名消息体）
+     * @param signedMessage 签名所覆盖的消息体（TUF 风格的规范化 manifest 字符串，
+     *   绑定 version/patchNumber/targetVersionCode/sha256；调用方与签名方必须逐字节一致）
      */
     fun verifySignatureOnly(
-        hashHexLower: String,
+        signedMessage: String,
         signatureBase64: String,
         publicKeyBase64: String,
         strictSignature: Boolean = true
@@ -85,7 +86,7 @@ internal object SignatureVerifier {
         // works on every supported API level (24+), including API < 33 — the old
         // SDK_INT < 33 rejection is gone.
         return try {
-            verifyEd25519(hashHexLower, sig, publicKeyBase64)
+            verifyEd25519(signedMessage, sig, publicKeyBase64)
         } catch (e: Exception) {
             Log.e(TAG, "Ed25519 verify failed", e)
             false
@@ -109,6 +110,7 @@ internal object SignatureVerifier {
     fun verifyDetailed(
         file: File,
         expectedSha256: String,
+        signedMessage: String,
         signatureBase64: String,
         publicKeyBase64: String,
         strictSignature: Boolean = true
@@ -123,7 +125,7 @@ internal object SignatureVerifier {
             return VerifyResult.MD5_MISMATCH
         }
         return if (verifySignatureOnly(
-                actualSha256.lowercase(),
+                signedMessage,
                 signatureBase64,
                 publicKeyBase64,
                 strictSignature
@@ -148,12 +150,33 @@ internal object SignatureVerifier {
     fun verify(
         file: File,
         expectedSha256: String,
+        signedMessage: String,
         signatureBase64: String,
         publicKeyBase64: String,
         strictSignature: Boolean = true
     ): Boolean = verifyDetailed(
-        file, expectedSha256, signatureBase64, publicKeyBase64, strictSignature
+        file, expectedSha256, signedMessage, signatureBase64, publicKeyBase64, strictSignature
     ) == VerifyResult.OK
+
+    /**
+     * 规范化 manifest 字符串（TUF 风格：签名覆盖元数据而非仅 blob 哈希）。
+     *
+     * 绑定 version + patchNumber + targetVersionCode + sha256，逐字节固定：
+     * 字段顺序固定、`\n` 连接、无尾换行。签名方（pack/sign 工具）与设备端必须
+     * 用**完全相同**的构造，否则验签失败。改动格式必须同步升级 `v1` 版本前缀。
+     */
+    fun canonicalManifest(
+        version: String,
+        patchNumber: Long,
+        targetVersionCode: Long,
+        sha256: String
+    ): String = buildString {
+        append("flutter_patcher.manifest.v1\n")
+        append("version=").append(version).append('\n')
+        append("patchNumber=").append(patchNumber).append('\n')
+        append("targetVersionCode=").append(targetVersionCode).append('\n')
+        append("sha256=").append(sha256.lowercase())
+    }
 
     private fun verifyEd25519(
         hashHex: String,

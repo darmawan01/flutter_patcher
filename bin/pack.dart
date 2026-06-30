@@ -34,6 +34,11 @@ Future<int> main(List<String> argv) async {
       help: 'Host APK versionCode the patch is built for (integer).',
     )
     ..addOption(
+      'patch-number',
+      help: 'Monotonic patch sequence number (integer). Bound into the signed '
+          'manifest and enforced for downgrade protection on device.',
+    )
+    ..addOption(
       'abi',
       help: 'ABI to extract. Default: first match among $_abiPriority.',
     )
@@ -76,6 +81,18 @@ Future<int> main(List<String> argv) async {
   if (targetVersionCode == null) {
     stderr.writeln('error: --target-version-code must be an integer.');
     return 64;
+  }
+
+  final pnRaw = args['patch-number'] as String?;
+  final int? patchNumber;
+  if (pnRaw == null) {
+    patchNumber = null;
+  } else {
+    patchNumber = int.tryParse(pnRaw);
+    if (patchNumber == null) {
+      stderr.writeln('error: --patch-number must be an integer.');
+      return 64;
+    }
   }
 
   final preferredAbi = args['abi'] as String?;
@@ -124,6 +141,7 @@ Future<int> main(List<String> argv) async {
       soBytes: soBytes,
       version: version,
       targetVersionCode: targetVersionCode,
+      patchNumber: patchNumber,
       requestedAssets: requestedAssets,
     );
     return 0;
@@ -140,6 +158,7 @@ void _writePatchPackage({
   required List<int> soBytes,
   required String version,
   required int targetVersionCode,
+  required int? patchNumber,
   required List<String> requestedAssets,
 }) {
   final patchFiles = <String, _PatchAssetFile>{};
@@ -257,6 +276,7 @@ void _writePatchPackage({
     'version': version,
     'sha256': payloadSha256,
     'targetVersionCode': targetVersionCode,
+    if (patchNumber != null) 'patchNumber': patchNumber,
     'abi': abi,
     'payload': 'patch.zip',
   };

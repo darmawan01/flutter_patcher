@@ -231,6 +231,7 @@ internal class PatchManager(
 
         val expectedSha256 = meta.optString("effectiveSha256", "")
         val signature = meta.optString("signature", "")
+        val signedManifest = meta.optString("signedManifest", "")
         val publicKey = PatcherConfig.publicKey(context)
         val strictSignature = PatcherConfig.strictSignature(context)
 
@@ -245,7 +246,7 @@ internal class PatchManager(
         }
 
         val verifyResult = SignatureVerifier.verifyDetailed(
-            patchFile, expectedSha256, signature, publicKey, strictSignature
+            patchFile, expectedSha256, signedManifest, signature, publicKey, strictSignature
         )
         if (verifyResult != SignatureVerifier.VerifyResult.OK) {
             val status = when (verifyResult) {
@@ -321,6 +322,7 @@ internal class PatchManager(
         val url = (info["patchUrl"] as? String).orEmpty()
         val sha256 = (info["sha256"] as? String).orEmpty()
         val signature = (info["signature"] as? String).orEmpty()
+        val patchNumber = (info["patchNumber"] as? Number)?.toLong()
         val mode = ((info["mode"] as? String) ?: MODE_FULL).lowercase()
         val hasTargetVersionCode = info.containsKey("targetVersionCode")
         val serverTargetVc = (info["targetVersionCode"] as? Number)?.toLong()
@@ -377,6 +379,40 @@ internal class PatchManager(
             }
         }
 
+        // TUF-style signed manifest: the Ed25519 signature covers a canonical string
+        // binding version + patchNumber + targetVersionCode + sha256, not just the
+        // payload hash. A signed patch must therefore carry patchNumber and an
+        // explicit targetVersionCode so the device can rebuild that exact message.
+        val signedManifest: String
+        if (signature.isNotBlank()) {
+            if (patchNumber == null) {
+                return ApplyResult.failure(
+                    ApplyErrorCode.INVALID_ARGS,
+                    "signed patch requires a patchNumber"
+                )
+            }
+            if (serverTargetVc == null) {
+                return ApplyResult.failure(
+                    ApplyErrorCode.INVALID_ARGS,
+                    "signed patch requires an explicit targetVersionCode"
+                )
+            }
+            // Monotonic downgrade protection: never apply a patchNumber at or below the
+            // highest already applied. Deterministic, so it runs before download.
+            val last = PatcherConfig.lastPatchNumber(context)
+            if (patchNumber <= last) {
+                return ApplyResult.failure(
+                    ApplyErrorCode.DOWNGRADE_REJECTED,
+                    "patchNumber=$patchNumber not greater than last applied=$last"
+                )
+            }
+            signedManifest = SignatureVerifier.canonicalManifest(
+                version, patchNumber, serverTargetVc, sha256
+            )
+        } else {
+            signedManifest = ""
+        }
+
         patchDir.mkdirs()
         val downloaded = File(patchDir, "temp_download.bin")
         var lastNetworkError: String? = null
@@ -401,7 +437,7 @@ internal class PatchManager(
                     val publicKey = PatcherConfig.publicKey(context)
                     val strictSignature = PatcherConfig.strictSignature(context)
                     if (!SignatureVerifier.verifySignatureOnly(
-                            verifiedSha256.lowercase(), signature, publicKey, strictSignature
+                            signedManifest, signature, publicKey, strictSignature
                         )
                     ) {
                         downloaded.delete()
@@ -454,6 +490,7 @@ internal class PatchManager(
                     downloadSha256 = sha256,
                     effectiveSha256 = verifiedSha256,
                     signature = signature,
+                    signedManifest = signedManifest,
                     targetVersionCode = targetVersionCode,
                 )
             } else {
@@ -463,6 +500,7 @@ internal class PatchManager(
                     downloadSha256 = sha256,
                     effectiveSha256 = verifiedSha256,
                     signature = signature,
+                    signedManifest = signedManifest,
                     targetVersionCode = targetVersionCode,
                 )
             }
@@ -475,8 +513,11 @@ internal class PatchManager(
         stagingDir.deleteRecursively()
         if (result != null) return result
 
+        // Patch is committed: raise the downgrade high-water mark so an older signed
+        // patch can never be replayed onto this device.
+        if (patchNumber != null) PatcherConfig.recordPatchNumber(context, patchNumber)
         CrashGuard(context).reset()
-        Log.d(TAG, "patch $version ready, takes effect on next cold start")
+        Log.d(TAG, "patch $version (patchNumber=$patchNumber) ready, takes effect on next cold start")
         return ApplyResult.SUCCESS
     }
 
@@ -492,6 +533,7 @@ internal class PatchManager(
         downloadSha256: String,
         effectiveSha256: String,
         signature: String,
+        signedManifest: String,
         targetVersionCode: Long,
     ): ApplyResult? {
         val meta = JSONObject().apply {
@@ -499,6 +541,7 @@ internal class PatchManager(
             put("downloadSha256", downloadSha256)
             put("effectiveSha256", effectiveSha256)
             put("signature", signature)
+            put("signedManifest", signedManifest)
             put(PatcherConfig.META_KEY_TARGET_VERSION_CODE, targetVersionCode)
             put("hasAssets", false)
             put("installed_at", System.currentTimeMillis())
@@ -512,6 +555,7 @@ internal class PatchManager(
         downloadSha256: String,
         effectiveSha256: String,
         signature: String,
+        signedManifest: String,
         targetVersionCode: Long,
     ): ApplyResult? {
         return try {
@@ -586,9 +630,15 @@ internal class PatchManager(
                     put("version", version)
                     put("downloadSha256", downloadSha256)
                     put("effectiveSha256", installedLibSha256)
+                    // Boot re-verifies the installed .so by integrity only: the payload
+                    // signature covers the zip, not the extracted .so, so signature/
+                    // signedManifest are empty here. The payload's signed manifest is
+                    // kept for the record / blacklist.
                     put("signature", "")
+                    put("signedManifest", "")
                     put("payloadSha256", effectiveSha256)
                     put("payloadSignature", signature)
+                    put("payloadSignedManifest", signedManifest)
                     put(PatcherConfig.META_KEY_TARGET_VERSION_CODE, targetVersionCode)
                     put("hasAssets", false)
                     put("installed_at", System.currentTimeMillis())
@@ -624,8 +674,10 @@ internal class PatchManager(
                 put("downloadSha256", downloadSha256)
                 put("effectiveSha256", installedLibSha256)
                 put("signature", "")
+                put("signedManifest", "")
                 put("payloadSha256", effectiveSha256)
                 put("payloadSignature", signature)
+                put("payloadSignedManifest", signedManifest)
                 put(PatcherConfig.META_KEY_TARGET_VERSION_CODE, targetVersionCode)
                 put("hasAssets", true)
                 put("assetMode", "overlay")

@@ -30,6 +30,9 @@ internal object PatcherConfig {
     const val KEY_CRASH_COUNT = "crash_count"
     const val KEY_PATCH_LOADING = "patch_loading"
 
+    /** Highest patchNumber ever successfully applied; gates monotonic downgrade protection. */
+    private const val KEY_LAST_PATCH_NUMBER = "last_patch_number"
+
     /** PID written at [com.flutter_patcher.flutter_patcher.CrashGuard.markBooting]; consumed
      *  next cold start to look up `ActivityManager.getHistoricalProcessExitReasons` (API 30+).
      *  Unused on API < 30 — that path uses the naive "patch_loading=true ⇒ crash" rule. */
@@ -128,6 +131,16 @@ internal object PatcherConfig {
     /** Pinned leaf-cert SPKI SHA-256 hashes (base64). Empty = pinning disabled. */
     fun pinnedSpkiSha256(context: Context): List<String> =
         decodeLoaderFieldCandidates(prefs(context).all[KEY_PINNED_SPKI])
+
+    /** Highest patchNumber applied so far (0 if none). */
+    fun lastPatchNumber(context: Context): Long =
+        prefs(context).getLong(KEY_LAST_PATCH_NUMBER, 0L)
+
+    /** Record a successfully applied patchNumber; never lowers the stored high-water mark. */
+    fun recordPatchNumber(context: Context, patchNumber: Long) {
+        if (patchNumber <= lastPatchNumber(context)) return
+        prefs(context).edit().putLong(KEY_LAST_PATCH_NUMBER, patchNumber).apply()
+    }
 
     fun loaderFieldCandidates(context: Context): List<String> =
         decodeLoaderFieldCandidates(prefs(context).all[KEY_LOADER_FIELDS])

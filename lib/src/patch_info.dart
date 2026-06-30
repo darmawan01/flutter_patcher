@@ -38,6 +38,14 @@ class PatchInfo {
   /// patch to the current app versionCode during `applyPatch`.
   final int? targetVersionCode;
 
+  /// Monotonic patch sequence number, bound into the signed manifest.
+  ///
+  /// Required for signed patches: the Ed25519 signature covers a canonical
+  /// manifest of (version, patchNumber, targetVersionCode, sha256), and the
+  /// device refuses any patchNumber at or below the highest already applied
+  /// (downgrade protection). Null for unsigned patches.
+  final int? patchNumber;
+
   /// Original JSON fields preserved by [PatchInfo.fromJson].
   ///
   /// Direct construction does not use this field.
@@ -49,6 +57,7 @@ class PatchInfo {
     this.sha256 = '',
     this.signature = '',
     this.targetVersionCode,
+    this.patchNumber,
     this.raw = const {},
   });
 
@@ -64,12 +73,17 @@ class PatchInfo {
     final int? parsedVc = rawVc is num
         ? rawVc.toInt()
         : (rawVc is String && rawVc.isNotEmpty ? int.tryParse(rawVc) : null);
+    final rawPn = json['patchNumber'] ?? json['patch_number'];
+    final int? parsedPn = rawPn is num
+        ? rawPn.toInt()
+        : (rawPn is String && rawPn.isNotEmpty ? int.tryParse(rawPn) : null);
     return PatchInfo(
       version: (json['version'] ?? '') as String,
       patchUrl: (json['patchUrl'] ?? json['patch_url'] ?? '') as String,
       sha256: (json['sha256'] ?? '') as String,
       signature: (json['signature'] ?? '') as String,
       targetVersionCode: parsedVc,
+      patchNumber: parsedPn,
       raw: Map<String, dynamic>.from(json),
     );
   }
@@ -81,6 +95,7 @@ class PatchInfo {
         if (sha256.isNotEmpty) 'sha256': sha256,
         'signature': signature,
         if (targetVersionCode != null) 'targetVersionCode': targetVersionCode,
+        if (patchNumber != null) 'patchNumber': patchNumber,
       };
 
   @override
@@ -198,6 +213,10 @@ enum PatchApplyError {
   /// likely a misconfiguration or a man-in-the-middle.
   insecureTransport,
 
+  /// The patch's `patchNumber` was at or below the highest already applied.
+  /// Monotonic downgrade protection — refuses replay of an older signed patch.
+  downgradeRejected,
+
   /// Unclassified native/channel error.
   unknown,
 }
@@ -222,6 +241,8 @@ PatchApplyError _parseApplyError(String? code) {
       return PatchApplyError.ioError;
     case 'INSECURE_TRANSPORT':
       return PatchApplyError.insecureTransport;
+    case 'DOWNGRADE_REJECTED':
+      return PatchApplyError.downgradeRejected;
     default:
       return PatchApplyError.unknown;
   }

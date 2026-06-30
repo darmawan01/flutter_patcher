@@ -24,6 +24,7 @@ class MockPatch {
     required this.version,
     required this.sha256,
     required this.targetVersionCode,
+    required this.patchNumber,
     required this.payload,
   });
 
@@ -32,6 +33,7 @@ class MockPatch {
   final String version;
   final String sha256;
   final int? targetVersionCode;
+  final int? patchNumber;
   final String payload;
 }
 
@@ -178,6 +180,10 @@ Future<MockPatch> loadMockPatch({
       crypto.sha256.convert(bytes).toString();
   final resolvedTargetVersionCode =
       targetVersionCode ?? _parseManifestVersionCode(manifestJson);
+  final rawPn = manifestJson['patchNumber'] ?? manifestJson['patch_number'];
+  final int? resolvedPatchNumber = rawPn is num
+      ? rawPn.toInt()
+      : (rawPn is String && rawPn.isNotEmpty ? int.tryParse(rawPn) : null);
 
   return MockPatch(
     patchFile: patchFile,
@@ -185,6 +191,7 @@ Future<MockPatch> loadMockPatch({
     version: resolvedVersion,
     sha256: resolvedSha256,
     targetVersionCode: resolvedTargetVersionCode,
+    patchNumber: resolvedPatchNumber,
     payload: payload,
   );
 }
@@ -210,6 +217,8 @@ Future<MockPatchServer> startMockPatchServer(
             'sha256': config.patch.sha256,
             if (config.patch.targetVersionCode != null)
               'targetVersionCode': config.patch.targetVersionCode,
+            if (config.patch.patchNumber != null)
+              'patchNumber': config.patch.patchNumber,
           },
         }));
     } else if (req.uri.path == config.patchPath) {
