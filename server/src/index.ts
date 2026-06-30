@@ -166,6 +166,43 @@ app.post('/api/kill', (req, res) => {
   res.json({ ok: true, config: store.config });
 });
 
+// Preview the signed manifest a device would receive for ANY stored patch
+// (not just the active one) — powers the dashboard's per-patch detail drawer.
+app.get('/api/patches/:version/preview', (req, res) => {
+  const rec = store.patch(req.params.version);
+  if (!rec) return res.status(404).json({ error: 'unknown version' });
+  const cfg = store.config;
+  const killed = cfg.killed.includes(rec.patchNumber);
+  const signature = signer.signManifestV2({
+    version: rec.version,
+    patchNumber: rec.patchNumber,
+    targetVersionCode: rec.targetVersionCode,
+    sha256: rec.sha256,
+    rolloutPercent: cfg.rolloutPercent,
+    channel: cfg.channel,
+  });
+  res.json({
+    version: rec.version,
+    patchNumber: rec.patchNumber,
+    targetVersionCode: rec.targetVersionCode,
+    sha256: rec.sha256,
+    abis: rec.abis,
+    uploadedAt: rec.uploadedAt,
+    active: cfg.activeVersion === rec.version,
+    killed,
+    signedManifest: {
+      version: rec.version,
+      patchNumber: rec.patchNumber,
+      targetVersionCode: rec.targetVersionCode,
+      sha256: rec.sha256,
+      rolloutPercent: cfg.rolloutPercent,
+      channel: cfg.channel,
+      signature,
+      patchUrl: `${baseUrl(req)}/payload/${encodeURIComponent(rec.version)}`,
+    },
+  });
+});
+
 app.get('/', (_req, res) => res.type('html').send(dashboardHtml()));
 
 app.listen(PORT, () => {

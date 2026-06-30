@@ -121,6 +121,31 @@ export function dashboardHtml(): string {
   .adopt .ab { height:6px; flex:1; border-radius:999px; background:var(--panel2); overflow:hidden; }
   .adopt .ab > i { display:block; height:100%; background:var(--accent); }
   .adopt .an { font-variant-numeric:tabular-nums; color:var(--muted); font-size:12px; min-width:26px; text-align:right; }
+  a.vlink { cursor:pointer; }
+  a.vlink b { color:var(--txt); }
+  a.vlink:hover { text-decoration:none; }
+  a.vlink:hover b { color:var(--accent2); }
+  /* applies-over-time sparkline */
+  .spark { display:flex; align-items:flex-end; gap:3px; height:96px; padding-top:6px; }
+  .spark .col { flex:1; display:flex; flex-direction:column; justify-content:flex-end; gap:2px; min-width:0; height:100%; }
+  .spark .col .f { background:var(--bad); border-radius:2px 2px 0 0; min-height:0; }
+  .spark .col .a { background:linear-gradient(180deg,var(--accent2),var(--accent)); border-radius:2px 2px 0 0; min-height:0; }
+  .spark .col:hover .a { filter:brightness(1.2); }
+  .spark-x { display:flex; justify-content:space-between; color:var(--faint); font-size:11px; margin-top:8px; }
+  .spark-legend { display:flex; gap:14px; font-size:12px; color:var(--muted); }
+  .spark-legend i { display:inline-block; width:10px; height:10px; border-radius:3px; margin-right:5px; vertical-align:-1px; }
+  /* per-patch detail drawer */
+  .scrim { position:fixed; inset:0; background:rgba(0,0,0,.5); opacity:0; pointer-events:none; transition:.18s; z-index:40; }
+  .scrim.open { opacity:1; pointer-events:auto; }
+  .drawer { position:fixed; top:0; right:0; height:100vh; width:460px; max-width:92vw; background:var(--panel); border-left:1px solid var(--line); box-shadow:-20px 0 60px rgba(0,0,0,.5); transform:translateX(100%); transition:transform .2s cubic-bezier(.4,0,.2,1); z-index:41; overflow-y:auto; padding:22px 24px; }
+  .drawer.open { transform:none; }
+  .drawer .dh { display:flex; align-items:flex-start; gap:12px; margin-bottom:18px; }
+  .drawer .dh h3 { margin:0; font-size:18px; font-weight:680; }
+  .drawer .dh .x { margin-left:auto; background:var(--panel2); border:1px solid var(--line); color:var(--muted); width:30px; height:30px; border-radius:8px; font-size:16px; padding:0; }
+  .drawer dl { display:grid; grid-template-columns:auto 1fr; gap:9px 16px; margin:0 0 18px; }
+  .drawer dt { color:var(--muted); font-size:12.5px; }
+  .drawer dd { margin:0; text-align:right; font-variant-numeric:tabular-nums; word-break:break-all; }
+  .drawer dd code { font-size:12px; }
   ol.steps { margin:0; padding-left:18px; color:var(--muted); font-size:13px; line-height:1.95; }
   ol.steps code { color:var(--txt); }
 </style>
@@ -152,6 +177,15 @@ export function dashboardHtml(): string {
       </div>
 
       <div class="grid metrics" id="metrics" style="margin-bottom:16px"></div>
+
+      <div class="card" style="margin-bottom:16px">
+        <h2 style="display:flex;align-items:center;justify-content:space-between">
+          <span>Applies over time · last 24h</span>
+          <span class="spark-legend"><span><i style="background:#5b8cff"></i>applied</span><span><i style="background:var(--bad)"></i>failed</span></span>
+        </h2>
+        <div class="spark" id="spark"></div>
+        <div class="spark-x"><span>24h ago</span><span>12h</span><span>now</span></div>
+      </div>
 
       <div class="grid cols2">
         <div class="card">
@@ -258,6 +292,8 @@ export function dashboardHtml(): string {
     </section>
   </main>
 </div>
+<div class="scrim" id="scrim" onclick="closeDetail()"></div>
+<aside class="drawer" id="drawer" aria-hidden="true"></aside>
 <div class="toast" id="toast"></div>
 <script>
 const $ = (id) => document.getElementById(id);
@@ -339,7 +375,7 @@ function renderPatches(s){
     const dl = '<a class="muted" href="/payload/'+encodeURIComponent(p.version)+'" title="download patch.zip">↓</a> ';
     const a = adopt[p.patchNumber]||0;
     const ad = '<div class="adopt"><span class="ab"><i style="width:'+Math.round(a/maxA*100)+'%"></i></span><span class="an">'+a+'</span></div>';
-    return '<tr><td><b>'+esc(p.version)+'</b></td><td>'+p.patchNumber+'</td><td>'+p.targetVersionCode+'</td><td class="muted">'+(p.abis||[]).join(', ')+'</td><td>'+ad+'</td><td class="muted">'+(p.uploadedAt?rel(p.uploadedAt):'—')+'</td><td>'+st+'</td><td style="text-align:right;white-space:nowrap">'+dl+act+kb+'</td></tr>';
+    return '<tr><td><a class="vlink" onclick="openDetail(\\''+esc(p.version)+'\\')"><b>'+esc(p.version)+'</b></a></td><td>'+p.patchNumber+'</td><td>'+p.targetVersionCode+'</td><td class="muted">'+(p.abis||[]).join(', ')+'</td><td>'+ad+'</td><td class="muted">'+(p.uploadedAt?rel(p.uploadedAt):'—')+'</td><td>'+st+'</td><td style="text-align:right;white-space:nowrap">'+dl+act+kb+'</td></tr>';
   }).join('') : '<tr><td colspan="8"><div class="empty">No patches yet — pack one and upload it above.</div></td></tr>';
 }
 
@@ -382,8 +418,64 @@ async function refresh() {
   $('channel').value = s.config.channel || '';
   if (!dirtyRollout) { $('rollout').value = s.config.rolloutPercent; $('rollout-val').textContent = s.config.rolloutPercent; }
 
-  renderMetrics(s); renderFeed(s); renderPatches(s); renderTelemetry(s); renderSettings(s);
+  renderMetrics(s); renderFeed(s); renderSpark(s); renderPatches(s); renderTelemetry(s); renderSettings(s);
+  if (drawerVersion) openDetail(drawerVersion, true); // keep an open drawer fresh
 }
+
+// applies/failures bucketed into 24 hourly columns (oldest -> newest)
+function renderSpark(s){
+  const now = Date.now(), hour = 3600000;
+  const buckets = []; for (let i=0;i<24;i++) buckets.push({ a:0, f:0 });
+  s.telemetry.forEach(function(t){
+    const e=t.event||{}; if(etype(e)!=='applyFinished') return;
+    const idx = 23 - Math.floor((now - t.at)/hour);
+    if(idx<0||idx>23) return;
+    if(e.ok) buckets[idx].a++; else buckets[idx].f++;
+  });
+  const max = Math.max(1, ...buckets.map(function(b){ return b.a+b.f; }));
+  $('spark').innerHTML = buckets.map(function(b,i){
+    const at = new Date(now-(23-i)*hour); const lbl = at.getHours()+':00';
+    const aH = Math.round(b.a/max*88), fH = Math.round(b.f/max*88);
+    const title = lbl+' · '+b.a+' applied'+(b.f?', '+b.f+' failed':'');
+    return '<div class="col" title="'+title+'">'+
+      (b.f?'<span class="f" style="height:'+fH+'px"></span>':'')+
+      (b.a?'<span class="a" style="height:'+aH+'px"></span>':'')+'</div>';
+  }).join('');
+}
+
+// per-patch detail drawer
+let drawerVersion = null;
+async function openDetail(version, silent){
+  drawerVersion = version;
+  if(!silent) location.hash = 'patch/'+encodeURIComponent(version);
+  $('scrim').classList.add('open'); $('drawer').classList.add('open'); $('drawer').setAttribute('aria-hidden','false');
+  if(!silent) $('drawer').innerHTML = '<div class="empty">Loading…</div>';
+  let d;
+  try { d = await api('/api/patches/'+encodeURIComponent(version)+'/preview'); }
+  catch(e){ $('drawer').innerHTML = '<div class="dh"><h3>'+esc(version)+'</h3><button class="x" onclick="closeDetail()">×</button></div><div class="empty">'+esc(e.message)+'</div>'; return; }
+  const applies = adoption(state.telemetry)[d.patchNumber]||0;
+  const stPill = d.killed ? '<span class="pill killed">killed</span>' : d.active ? '<span class="pill live">live</span>' : '<span class="pill idle">idle</span>';
+  $('drawer').innerHTML =
+    '<div class="dh"><div><h3>'+esc(d.version)+'</h3><div class="muted" style="font-size:12.5px;margin-top:3px">patch #'+d.patchNumber+'  '+stPill+'</div></div><button class="x" onclick="closeDetail()">×</button></div>'+
+    '<dl>'+
+      '<dt>Patch number</dt><dd>'+d.patchNumber+'</dd>'+
+      '<dt>Target versionCode</dt><dd>'+d.targetVersionCode+'</dd>'+
+      '<dt>ABIs</dt><dd>'+((d.abis||[]).join(', ')||'—')+'</dd>'+
+      '<dt>Applies (telemetry)</dt><dd>'+applies+'</dd>'+
+      '<dt>Uploaded</dt><dd>'+(d.uploadedAt?rel(d.uploadedAt):'—')+'</dd>'+
+      '<dt>Rollout</dt><dd>'+d.signedManifest.rolloutPercent+'%'+(d.signedManifest.channel?' · '+esc(d.signedManifest.channel):'')+'</dd>'+
+      '<dt>sha256</dt><dd><code>'+esc(d.sha256)+'</code></dd>'+
+    '</dl>'+
+    '<div class="row" style="margin-bottom:14px"><button class="ghost mini" onclick="copy(JSON.stringify(window._lastManifest,null,2),\\'Manifest copied\\')">Copy manifest</button>'+
+    '<a class="ghost mini" style="display:inline-block;text-decoration:none" href="/payload/'+encodeURIComponent(d.version)+'">Download patch.zip</a>'+
+    (d.active?'':'<button class="mini" onclick="activate(\\''+esc(d.version)+'\\');closeDetail()">Make live</button>')+'</div>'+
+    '<h2 style="margin-bottom:8px">Signed manifest · what the device receives</h2>'+
+    '<pre>'+esc(JSON.stringify(d.signedManifest, null, 2))+'</pre>';
+  window._lastManifest = d.signedManifest;
+}
+function closeDetail(){ drawerVersion=null; if(location.hash.indexOf('#patch/')===0) location.hash=''; $('scrim').classList.remove('open'); $('drawer').classList.remove('open'); $('drawer').setAttribute('aria-hidden','true'); }
+window.openDetail = openDetail; window.closeDetail = closeDetail;
+document.addEventListener('keydown', function(e){ if(e.key==='Escape') closeDetail(); });
 
 function setRollout(v){ dirtyRollout=true; $('rollout').value=v; $('rollout-val').textContent=v; }
 window.setRollout = setRollout;
@@ -418,8 +510,9 @@ $('upload').onclick = async function(){
   catch(e){ toast(e.message, true); }
 };
 
-if (location.hash) go(location.hash.slice(1));
-refresh();
+const _deep = location.hash.indexOf('#patch/')===0 ? decodeURIComponent(location.hash.slice(7)) : null;
+if (location.hash && !_deep) go(location.hash.slice(1));
+refresh().then(function(){ if (_deep) openDetail(_deep, true); });
 setInterval(function(){ if(document.visibilityState==='visible') refresh(); }, 5000);
 </script>
 </body>
