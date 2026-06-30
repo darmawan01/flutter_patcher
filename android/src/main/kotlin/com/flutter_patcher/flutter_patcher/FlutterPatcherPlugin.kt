@@ -87,8 +87,13 @@ class FlutterPatcherPlugin :
                 CrashGuard(appContext).markBooting()
                 result.success(null)
             }
+            "reportFirstFrame" -> {
+                CrashGuard(appContext).markFirstFrame()
+                result.success(null)
+            }
             "reportBootSuccess" -> {
-                CrashGuard(appContext).markBootSuccess()
+                // Watchdog window survived → patch confirmed healthy, reset the counter.
+                CrashGuard(appContext).markBootHealthy()
                 result.success(null)
             }
             "reportDartBootError" -> handleReportDartBootError(call, result)

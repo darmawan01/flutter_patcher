@@ -76,6 +76,7 @@ android {
     }
 
     testOptions {
+        unitTests.returnDefaultValues = true
         unitTests.all {
             useJUnitPlatform()
             jvmArgs "-Dnet.bytebuddy.experimental=true"

@@ -20,7 +20,7 @@ internal object PatcherConfig {
     // ---- Config keys ----
     private const val KEY_PUBLIC_KEY = "public_key_base64"
     private const val KEY_PUBLIC_KEYS = "public_keys_base64"
-    private const val KEY_MAX_CRASH = "max_crash_count"
+    internal const val KEY_MAX_CRASH = "max_crash_count"
     private const val KEY_STRICT_SIG = "strict_signature"
     private const val KEY_REQUIRE_HTTPS = "require_https"
     private const val KEY_PINNED_SPKI = "pinned_spki_sha256"

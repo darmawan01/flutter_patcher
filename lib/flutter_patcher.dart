@@ -40,6 +40,7 @@ class FlutterPatcher {
   FlutterPatcher._();
 
   static bool _inited = false;
+  static bool _firstFrameReported = false;
   static bool _bootReported = false;
   static bool _bootErrorReported = false;
   static bool _nonAndroidWarned = false;
@@ -164,10 +165,26 @@ class FlutterPatcher {
     _BootVerifier.start();
   }
 
-  /// Marks the current patched boot as successful and clears native crash
-  /// protection state.
+  /// Clears the "crashed before first frame" signal once the UI renders.
   ///
-  /// Usually called automatically by [init] after the first frame.
+  /// Does NOT yet declare the patch healthy — that happens after the watchdog
+  /// window via [reportBootSuccess]. Called automatically by [init].
+  static Future<void> reportFirstFrame() async {
+    if (_notAndroidGuard('reportFirstFrame')) return;
+    if (_firstFrameReported) return;
+    _firstFrameReported = true;
+    try {
+      await PatcherChannel.reportFirstFrame();
+    } catch (e, s) {
+      _log('reportFirstFrame failed: $e', s);
+    }
+  }
+
+  /// Declares the patched boot healthy and resets native crash protection.
+  ///
+  /// Called automatically by [init] only after the app survives the watchdog
+  /// window (first frame + [verifyAfter] of healthy foreground time), so a
+  /// render-then-crash-loop patch keeps accumulating crashes until it trips.
   static Future<void> reportBootSuccess() async {
     if (_notAndroidGuard('reportBootSuccess')) return;
     if (_bootReported) return;
@@ -475,7 +492,9 @@ class _BootVerifier with WidgetsBindingObserver {
   }
 
   void _begin() {
-    FlutterPatcher.reportBootSuccess();
+    // First frame rendered: clear the pre-frame crash signal, but do NOT yet
+    // declare the patch healthy — that waits for the watchdog window to elapse.
+    FlutterPatcher.reportFirstFrame();
 
     final binding = WidgetsBinding.instance;
     binding.addObserver(this);
@@ -516,6 +535,8 @@ class _BootVerifier with WidgetsBindingObserver {
     _windowClosed = true;
     WidgetsBinding.instance.removeObserver(this);
     _timer?.cancel();
+    // Survived the watchdog window with no boot crash → the patch is healthy.
+    FlutterPatcher.reportBootSuccess();
     FlutterPatcher._dartHookActive = false;
   }
 }

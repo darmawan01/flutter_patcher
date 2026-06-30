@@ -47,7 +47,12 @@ class PatcherChannel {
     await channel.invokeMethod<void>('markBooting');
   }
 
-  /// Dart 首帧完成 → 重置熔断计数。
+  /// Dart 首帧渲染 → 清「首帧前崩溃」信号（但不重置计数器）。
+  static Future<void> reportFirstFrame() async {
+    await channel.invokeMethod<void>('reportFirstFrame');
+  }
+
+  /// 看门狗窗口存活到期 → 补丁确认健康，重置熔断计数。
   static Future<void> reportBootSuccess() async {
     await channel.invokeMethod<void>('reportBootSuccess');
   }

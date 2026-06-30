@@ -11,11 +11,16 @@ import java.io.File
 /**
  * 熔断器：防止补丁导致启动崩溃时无限重启。
  *
- * 状态机（解耦版）：
+ * 状态机（boot-token + watchdog）：
  * 1. Application.attachBaseContext → [markBooting] 写 patch_loading=true（commit 同步）+ pid
- * 2. Dart 首帧 → [markBootSuccess] 立即清 patch_loading=false + crash_count=0；
- *    **保留** last_booting_pid 给下次冷启动的 ExitInfo 查询
- * 3. Dart 首帧 + verifyAfter 秒 → 卸载 Dart 错误钩子（仅 Dart 层动作，不触原生）
+ * 2. Dart 首帧 → [markFirstFrame] 清 patch_loading=false（解除"首帧前崩"信号），
+ *    但**不**清 crash_count；**保留** last_booting_pid 给下次冷启动的 ExitInfo 查询
+ * 3. Dart 首帧 + verifyAfter 秒无崩溃存活 → [markBootHealthy] 才清 crash_count=0
+ *    （真正的启动成功令牌），同时卸载 Dart 错误钩子
+ *
+ * 关键：crash_count 只在熬过看门狗窗口后才清零，所以"渲染出首帧→几秒后崩溃循环"
+ * 的补丁会跨启动累计崩溃次数直到熔断（旧实现在首帧就清零，maxCrashCount≥2 时永远
+ * 熔断不了）。
  *
  * 下次冷启动 [shouldLoadPatch] 综合判定：
  *
@@ -119,16 +124,28 @@ internal class CrashGuard(private val context: Context) {
     }
 
     /**
-     * Dart 首帧渲染完成：补丁可信，立即清 patch_loading + crash_count。
+     * Dart 首帧渲染完成：清 patch_loading（"首帧前就崩"信号解除），但**不**重置
+     * crash_count —— 渲染出首帧不等于补丁健康，可能渲染后马上崩溃循环。
      *
-     * 注意：故意 **不清** [PatcherConfig.KEY_LAST_BOOTING_PID]。下次冷启动
-     * [shouldLoadPatch] 仍可用这个 pid 查 [ApplicationExitInfo]，从而捕捉首帧
-     * 后才发生的 native crash / ANR —— 那一刻 patch_loading 已清，不能再作为
-     * 崩溃信号。pid 在 [shouldLoadPatch] 处理完一次会话后清除。
+     * 故意 **不清** [PatcherConfig.KEY_LAST_BOOTING_PID]：下次冷启动 [shouldLoadPatch]
+     * 仍可用它查 [ApplicationExitInfo] 捕捉首帧后的 native crash / ANR（API 30+）。
      */
-    fun markBootSuccess() {
+    fun markFirstFrame() {
         sp.edit()
             .putBoolean(PatcherConfig.KEY_PATCH_LOADING, false)
+            .commit()
+    }
+
+    /**
+     * 看门狗窗口存活到期：补丁确认健康，重置 crash_count。这是真正的"启动成功令牌"——
+     * 只有在首帧之后再无崩溃地存活了 verifyAfter 窗口，才清零计数器。
+     *
+     * 这样设计修复了一个累计 bug：旧实现在**首帧**就清零 crash_count，于是"渲染出首帧
+     * → 几秒后崩溃"的补丁每次启动都把计数器清回 0，当 maxCrashCount≥2 时永远凑不够
+     * 阈值、永远熔断不了。现在窗口内崩溃 → 计数器保留 → 跨启动累计直到熔断。
+     */
+    fun markBootHealthy() {
+        sp.edit()
             .putInt(PatcherConfig.KEY_CRASH_COUNT, 0)
             .commit()
     }
