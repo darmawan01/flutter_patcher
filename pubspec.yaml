@@ -35,6 +35,7 @@ dev_dependencies:
 
 # Dev-time tooling. Run with `dart run flutter_patcher:<name>`.
 executables:
+  init:
   keygen:
   pack:
   doctor:

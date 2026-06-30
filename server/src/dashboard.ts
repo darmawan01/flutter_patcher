@@ -118,6 +118,21 @@ export function dashboardHtml(): string {
   </div>
 
   <div class="card">
+    <h2>How to make a patch</h2>
+    <ol style="margin:0;padding-left:18px;color:var(--muted);font-size:13px;line-height:1.9">
+      <li>Edit your Dart, then <code>flutter build apk --release</code></li>
+      <li>Pack (and optionally delta) it:
+        <pre style="margin-top:6px">dart run flutter_patcher:pack \\
+  --apk build/app/outputs/flutter-apk/app-release.apk \\
+  --version 1.0.1-h1 --target-version-code &lt;vc&gt; --patch-number 1
+# smaller delta vs your baseline:  --from-apk baseline.apk</pre>
+      </li>
+      <li>Upload <code>dist/patch.zip</code> + <code>dist/manifest.json</code> → make live → set rollout %.</li>
+    </ol>
+    <div class="muted" style="margin-top:8px;font-size:12.5px">First time? <code>dart run flutter_patcher:init --server <span id="self-url"></span> --public-key …</code> wires up your app.</div>
+  </div>
+
+  <div class="card">
     <h2>Upload a packed patch</h2>
     <div class="drop" id="drop">
       <div><b>Drop</b> patch.zip + manifest.json here</div>
@@ -173,6 +188,7 @@ async function refresh() {
   $('refresh').textContent = 'updated ' + new Date().toLocaleTimeString();
   $('pubkey').textContent = s.publicKey;
   $('checkurl').textContent = location.origin + '/check';
+  const su = $('self-url'); if (su) su.textContent = location.origin;
 
   // header summary
   const active = s.patches.find(p => p.version === s.config.activeVersion);

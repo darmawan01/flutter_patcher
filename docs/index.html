@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>flutter_patcher docs</title>
+  <meta name="description" content="Self-hosted Flutter Android code-push — docs" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/docsify@4/lib/themes/dark.css" />
+  <style>
+    :root { --theme-color:#3b82f6; }
+    .markdown-section { max-width: 880px; }
+    .markdown-section pre, .markdown-section code { font-family: ui-monospace, monospace; }
+  </style>
+</head>
+<body>
+  <!--
+    Zero-build docs site (docsify renders the markdown in this folder at runtime).
+    Serve it from anywhere static: GitHub Pages (Settings → Pages → source = /docs
+    on main), `npx docsify-cli serve docs`, or any web host.
+  -->
+  <div id="app">Loading…</div>
+  <script>
+    window.$docsify = {
+      name: 'flutter_patcher',
+      repo: 'https://github.com/darmawan01/flutter_patcher',
+      loadSidebar: true,
+      subMaxLevel: 2,
+      homepage: 'getting-started.md',
+      auto2top: true,
+    };
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/docsify@4"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-dart.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-bash.min.js"></script>
+</body>
+</html>
