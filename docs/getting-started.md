@@ -77,6 +77,20 @@ Sanity-check it: `dart run flutter_patcher:doctor --dist dist`.
 
 ## 4. Upload + make it live
 
+**One command (CI-friendly)** — pack, upload, and activate in one step (replaces
+step 3 + this step):
+
+```bash
+dart run flutter_patcher:release \
+  --apk build/app/outputs/flutter-apk/app-release.apk \
+  --server https://your-server.example.com --token $FP_ADMIN_TOKEN \
+  --version 1.0.1-h1 --target-version-code <vc> --patch-number 1 \
+  --rollout 10 --make-live
+```
+
+Then `dart run flutter_patcher:status --server <url>` shows exactly what the server
+is serving. Or do it by hand in the dashboard:
+
 Open the dashboard (`/`), drop `dist/patch.zip` + `dist/manifest.json`, then:
 
 - **Make live** the patch,

@@ -59,12 +59,17 @@ FP_SIGNING_SEED=<seed> npm start          # dashboard at http://localhost:8090/
 dart run flutter_patcher:init --server <url> --public-key <key>
 #    → call await setupPatcher(); in main(), before runApp()
 
-# 3. Make a Dart change, then pack a patch
+# 3. Make a Dart change, then ship a patch in one step (pack + upload + make-live)
 flutter build apk --release
-dart run flutter_patcher:pack --apk build/app/outputs/flutter-apk/app-release.apk \
-  --version 1.0.1-h1 --target-version-code <vc> --patch-number 1
+dart run flutter_patcher:release \
+  --apk build/app/outputs/flutter-apk/app-release.apk \
+  --server <url> --token $FP_ADMIN_TOKEN \
+  --version 1.0.1-h1 --target-version-code <vc> --patch-number 1 \
+  --rollout 10 --make-live
+#    (or `:pack` to only build dist/, then drag it into the dashboard)
 
-# 4. Upload dist/patch.zip + dist/manifest.json in the dashboard → make live → set rollout %
+# 4. See what the server is serving
+dart run flutter_patcher:status --server <url>
 ```
 
 Full walkthrough: **[docs/getting-started.md](docs/getting-started.md)**.
@@ -82,7 +87,7 @@ Pages → source `/docs`, or `npx docsify-cli serve docs`):
 - **[iOS — out of scope](docs/ios-out-of-scope.md)**
 - **[Reference server + dashboard](server/README.md)** — self-hosted endpoint + control room
 
-CLI: `dart run flutter_patcher:<init|pack|keygen|doctor|mock_server> --help`.
+CLI: `dart run flutter_patcher:<init|pack|release|status|keygen|doctor|mock_server> --help`.
 中文：[README-zh.md](README-zh.md).
 
 ---

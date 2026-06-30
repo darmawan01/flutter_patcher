@@ -38,6 +38,8 @@ executables:
   init:
   keygen:
   pack:
+  release:
+  status:
   doctor:
   mock_server:
 
