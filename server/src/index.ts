@@ -108,6 +108,10 @@ function baseUrl(req: express.Request): string {
 // The OTA check. Signs a v2 manifest for the active patch with the current
 // rollout/channel, and a signed kill list. The device enforces the rest.
 app.get('/check', (req, res) => {
+  // The signed response is deterministic for a given config, so Express's ETag
+  // + this header let CDNs/clients revalidate cheaply (304) without serving a
+  // stale rollout. Cuts bandwidth when nothing changed between launches.
+  res.set('Cache-Control', 'no-cache');
   const cfg = store.config;
   const killed = cfg.killed;
   const rolledBackSignature = killed.length ? signer.signRollback(killed) : '';
@@ -147,7 +151,12 @@ app.get('/check', (req, res) => {
 app.get('/payload/:version', (req, res) => {
   const rec = store.patch(req.params.version);
   if (!rec || !existsSync(rec.file)) return res.status(404).send('not found');
-  res.type('application/octet-stream').sendFile(rec.file);
+  // sendFile already supports Range (resumable downloads) + ETag/Last-Modified
+  // (conditional GET). Add a cache window so a CDN/proxy can offload repeat
+  // downloads; the device still integrity-checks every payload against the
+  // freshly-signed sha256 from /check, so a stale edge copy can't be applied.
+  res.type('application/octet-stream');
+  res.sendFile(rec.file, { maxAge: '1h', lastModified: true, acceptRanges: true });
 });
 
 // Optional telemetry sink the app's onEvent can POST to.
