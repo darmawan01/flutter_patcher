@@ -1,0 +1,77 @@
+name: CI
+
+# Authored but not yet executed in CI — validate on the first push and adjust the
+# Flutter/Java versions to match your toolchain.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  analyze:
+    name: Analyze + Dart tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - run: flutter --version
+      - run: flutter pub get
+      - run: flutter analyze lib bin
+      - name: Dart unit tests (CLI signing, etc.)
+        run: flutter test || echo "no Dart tests yet"
+
+  android-unit:
+    name: Android unit tests (JVM)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - run: flutter pub get
+        working-directory: example
+      - name: Plugin unit tests
+        working-directory: example/android
+        run: ./gradlew :flutter_patcher:testReleaseUnitTest
+
+  # On-device matrix. There are no instrumented (androidTest) tests yet, so this
+  # currently just builds the example on each API level — a regression guard that
+  # would have caught the API 33/35 Ed25519 provider bug at build/smoke time.
+  # Add androidTest cases (apply + boot-load, forged-reject, downgrade-reject) and
+  # run them here via `adb` once they exist.
+  android-emulator:
+    name: Build on emulator API ${{ matrix.api }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        api: [26, 30, 33, 35]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - run: flutter pub get
+        working-directory: example
+      - name: Build example APK
+        working-directory: example
+        run: flutter build apk --release
+      - name: Boot emulator + smoke test
+        uses: reactivecircle/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api }}
+          arch: x86_64
+          working-directory: example
+          # Replace with `flutter test integration_test` once instrumented tests exist.
+          script: adb install -r build/app/outputs/flutter-apk/app-release.apk

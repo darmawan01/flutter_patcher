@@ -33,8 +33,17 @@ If this project helps your Flutter release workflow, please star it.
 - Hot updates for Dart code compiled into Android `libapp.so`
 - Patches take effect on the next cold start; no in-process code swapping
 - Self-hosted distribution; no third-party cloud lock-in
-- Built-in integrity verification, crash rollback, and a bad-patch blacklist
-- Includes a packaging CLI, runtime diagnostics, local mock server, and sample app
+- Ed25519-signed, SHA-256 manifests with downgrade protection and a signed kill switch
+- HTTPS-required downloads with optional cert pinning; multi-key rotation
+- Crash-loop circuit breaker, base-binary drift guard, multi-ABI packaging
+- Staged percentage rollouts + channels; `checkAndStage` safe-default flow
+- Signing CLI (`keygen` / `pack --key` / `doctor`), diagnostics, mock server, sample app
+
+## Operating it safely
+
+- [Security hardening guide](docs/security-hardening.md) — threat model + every knob
+- [Compatibility matrix](docs/compatibility.md) — API levels, ABIs, what a patch can change
+- [Why iOS is out of scope](docs/ios-out-of-scope.md)
 
 ---
 
