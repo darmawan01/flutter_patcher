@@ -3,6 +3,7 @@
   - [Shipping from CI](ci.md)
   - [Compatibility](compatibility.md)
   - [Security hardening](security-hardening.md)
+  - [Wire protocol](protocol.md)
   - [iOS — out of scope](ios-out-of-scope.md)
 - Operate
   - [Reference server + dashboard](https://github.com/darmawan01/flutter_patcher/tree/main/server)

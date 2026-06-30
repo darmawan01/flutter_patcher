@@ -85,6 +85,7 @@ Pages → source `/docs`, or `npx docsify-cli serve docs`):
 - **[Shipping from CI](docs/ci.md)** — release patches from GitHub Actions / any runner
 - **[Compatibility](docs/compatibility.md)** — API levels, ABIs, what a patch can change
 - **[Security hardening](docs/security-hardening.md)** — threat model + every knob
+- **[Wire protocol](docs/protocol.md)** — the SDK ⇄ server contract (build your own server/client)
 - **[iOS — out of scope](docs/ios-out-of-scope.md)**
 - **[Reference server + dashboard](server/README.md)** — self-hosted endpoint + control room
 
