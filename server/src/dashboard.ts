@@ -207,6 +207,7 @@ export function dashboardHtml(): string {
             </span>
             <button id="save-config">Apply rollout</button>
           </div>
+          <div id="ah-line" class="muted" style="font-size:12px;margin-top:12px"></div>
         </div>
 
         <div class="card">
@@ -268,6 +269,20 @@ export function dashboardHtml(): string {
         </div>
       </div>
 
+      <div class="card" style="margin-bottom:16px">
+        <h2 style="display:flex;align-items:center;justify-content:space-between"><span>Rollout auto-halt</span><span id="ah-status" class="pill idle">off</span></h2>
+        <div class="muted" style="font-size:12.5px;margin-bottom:14px">Freezes the live rollout to 0% automatically when the active patch's apply-failure rate crosses your threshold — watching the telemetry devices report. Re-apply a rollout % to resume.</div>
+        <div class="row" style="gap:18px">
+          <label><input type="checkbox" id="ah-enabled" /> Enabled</label>
+          <label>Failure rate ≥ <input type="number" id="ah-rate" min="1" max="100" style="width:62px" /> %</label>
+          <label>Min applies <input type="number" id="ah-samples" min="1" style="width:62px" /></label>
+          <label>Min failures <input type="number" id="ah-failures" min="1" style="width:62px" /></label>
+          <label>Window <input type="number" id="ah-window" min="1" style="width:62px" /> min</label>
+          <button id="ah-save">Save</button>
+        </div>
+        <div id="ah-last" class="muted" style="font-size:12.5px;margin-top:12px"></div>
+      </div>
+
       <div class="grid cols2">
         <div class="card">
           <h2>Make a patch</h2>
@@ -299,6 +314,7 @@ export function dashboardHtml(): string {
 const $ = (id) => document.getElementById(id);
 let state = { publicKey:'', patches:[], config:{ killed:[] }, telemetry:[] };
 let dirtyRollout = false;      // don't stomp the slider while the user drags
+let dirtyAH = false;           // ...nor the auto-halt fields while editing
 let teleFilter = 'all';
 const DAY = 86400000;
 
@@ -403,6 +419,32 @@ function renderSettings(s){
   }).join('') : '<div class="empty">Nothing killed.</div>';
 }
 
+function renderAutoHalt(s){
+  const ah = s.config.autoHalt || {};
+  const halted = s.config.rolloutPercent===0 && s.lastHalt;
+  const st = $('ah-status');
+  if (halted) { st.className='pill killed'; st.textContent='halted'; }
+  else if (ah.enabled) { st.className='pill live'; st.textContent='armed'; }
+  else { st.className='pill idle'; st.textContent='off'; }
+  if (!dirtyAH) {
+    $('ah-enabled').checked = !!ah.enabled;
+    $('ah-rate').value = Math.round((ah.failureRate||0)*100);
+    $('ah-samples').value = ah.minSamples;
+    $('ah-failures').value = ah.minFailures;
+    $('ah-window').value = ah.windowMinutes;
+  }
+  const tot = s.lastHalt ? (s.lastHalt.ok+s.lastHalt.fail) : 0;
+  $('ah-last').innerHTML = s.lastHalt
+    ? 'Last halt — <b>'+esc(s.lastHalt.version)+' #'+s.lastHalt.patchNumber+'</b>: '+s.lastHalt.fail+'/'+tot+' applies failed ('+Math.round(s.lastHalt.rate*100)+'%) · '+rel(s.lastHalt.at)
+    : 'No auto-halt has fired.';
+  const line = $('ah-line');
+  if (line) {
+    if (halted) line.innerHTML = '<span style="color:#fca5a5">● Auto-halt froze this rollout</span> — '+s.lastHalt.fail+'/'+tot+' failed. Re-apply a % to resume.';
+    else if (ah.enabled) line.innerHTML = '<span style="color:#7ee2a8">● Auto-halt armed</span> — freezes at &ge;'+Math.round((ah.failureRate||0)*100)+'% failures over '+ah.minSamples+'+ applies.';
+    else line.textContent = 'Auto-halt off · turn it on in Settings.';
+  }
+}
+
 async function refresh() {
   let s;
   try { s = await api('/api/state'); $('dot').className='dot'; $('status').textContent='online · '+new Date().toLocaleTimeString(); }
@@ -418,7 +460,7 @@ async function refresh() {
   $('channel').value = s.config.channel || '';
   if (!dirtyRollout) { $('rollout').value = s.config.rolloutPercent; $('rollout-val').textContent = s.config.rolloutPercent; }
 
-  renderMetrics(s); renderFeed(s); renderSpark(s); renderPatches(s); renderTelemetry(s); renderSettings(s);
+  renderMetrics(s); renderFeed(s); renderSpark(s); renderPatches(s); renderTelemetry(s); renderSettings(s); renderAutoHalt(s);
   if (drawerVersion) openDetail(drawerVersion, true); // keep an open drawer fresh
 }
 
@@ -492,6 +534,21 @@ window.activate = function(v){ $('active').value = v; $('save-config').click(); 
 window.kill = async function(n, v){ if(!confirm('Kill '+v+' (#'+n+')? Devices revert to the built-in build on next check.')) return; await setKilled([...new Set([...state.config.killed, n])]); toast('Killed #'+n); };
 window.unkill = async function(n){ await setKilled(state.config.killed.filter(function(x){return x!==n;})); toast('Un-killed #'+n); };
 async function setKilled(killed){ try { await api('/api/kill',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({killed:killed})}); refresh(); } catch(e){ toast(e.message,true); } }
+
+// auto-halt config
+['ah-enabled','ah-rate','ah-samples','ah-failures','ah-window'].forEach(function(id){ const el=$(id); if(el) el.addEventListener('input', function(){ dirtyAH=true; }); });
+$('ah-save').onclick = async function(){
+  try {
+    await api('/api/config',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ autoHalt:{
+      enabled: $('ah-enabled').checked,
+      failureRate: (+$('ah-rate').value)/100,
+      minSamples: +$('ah-samples').value,
+      minFailures: +$('ah-failures').value,
+      windowMinutes: +$('ah-window').value,
+    }})});
+    dirtyAH=false; toast('Auto-halt saved'); refresh();
+  } catch(e){ toast(e.message,true); }
+};
 
 // upload (file picker + drag-drop)
 const drop = $('drop'), filesInput = $('files');

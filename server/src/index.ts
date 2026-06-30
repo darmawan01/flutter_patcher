@@ -7,6 +7,7 @@ import multer from 'multer';
 
 import { Signer } from './signing.js';
 import { PATCH_DIR, Store, sha256OfFile } from './store.js';
+import type { HaltEvent } from './store.js';
 import { dashboardHtml } from './dashboard.js';
 
 const PORT = Number(process.env.PORT || 8090);
@@ -21,7 +22,50 @@ const store = new Store();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 200 * 1024 * 1024 } });
 
 // In-memory telemetry ring (devices POST onEvent here if wired).
-const telemetry: unknown[] = [];
+const telemetry: { at: number; event: any }[] = [];
+
+// Last time auto-halt froze a rollout (in-memory; informational for the dashboard).
+let lastHalt: HaltEvent | null = null;
+
+// Watch the live patch's recent failure rate; freeze the rollout if it goes bad.
+// Runs on every applyFinished telemetry event. Operates on the in-memory ring,
+// so it resets with the process — fine for a reference server.
+function evaluateAutoHalt(): void {
+  const cfg = store.config;
+  const ah = cfg.autoHalt;
+  if (!ah?.enabled || cfg.rolloutPercent <= 0) return;
+  const active = store.activePatch();
+  if (!active) return;
+
+  const since = Date.now() - ah.windowMinutes * 60_000;
+  let ok = 0;
+  let fail = 0;
+  for (const t of telemetry) {
+    if (t.at < since) continue;
+    const e = t.event;
+    const type = String(e?.type ?? '').replace('PatchEventType.', '');
+    if (type !== 'applyFinished' || e?.patchNumber !== active.patchNumber) continue;
+    if (e?.ok === false) fail++;
+    else if (e?.ok === true) ok++;
+  }
+
+  const total = ok + fail;
+  if (total < ah.minSamples || fail < ah.minFailures) return;
+  const rate = fail / total;
+  if (rate < ah.failureRate) return;
+
+  store.setConfig({ rolloutPercent: 0 });
+  lastHalt = { at: Date.now(), version: active.version, patchNumber: active.patchNumber, ok, fail, rate };
+  console.warn(
+    `[auto-halt] froze rollout of ${active.version} #${active.patchNumber}: ` +
+      `${fail}/${total} applies failed (${Math.round(rate * 100)}%)`,
+  );
+}
+
+function clampInt(v: unknown, lo: number, hi: number, fallback: number): number {
+  const n = Math.floor(Number(v));
+  return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : fallback;
+}
 
 const app = express();
 // Behind a TLS-terminating proxy (Railway/Fly/Heroku/nginx), honor
@@ -87,6 +131,7 @@ app.get('/payload/:version', (req, res) => {
 app.post('/api/telemetry', (req, res) => {
   telemetry.unshift({ at: Date.now(), event: req.body });
   if (telemetry.length > 200) telemetry.length = 200;
+  evaluateAutoHalt();
   res.json({ ok: true });
 });
 
@@ -97,6 +142,7 @@ app.get('/api/state', (_req, res) => {
     ...store.state(),
     publicKey: signer.publicKeySpkiBase64,
     telemetry: telemetry.slice(0, 50),
+    lastHalt,
   });
 });
 
@@ -147,13 +193,24 @@ app.post(
 );
 
 app.post('/api/config', (req, res) => {
-  const { activeVersion, rolloutPercent, channel } = req.body ?? {};
+  const { activeVersion, rolloutPercent, channel, autoHalt } = req.body ?? {};
   const patch: Record<string, unknown> = {};
   if (activeVersion !== undefined) patch.activeVersion = activeVersion;
   if (rolloutPercent !== undefined) {
     patch.rolloutPercent = Math.max(0, Math.min(100, Number(rolloutPercent)));
   }
   if (channel !== undefined) patch.channel = String(channel);
+  if (autoHalt !== undefined && autoHalt !== null) {
+    const cur = store.config.autoHalt;
+    const rate = Number(autoHalt.failureRate);
+    patch.autoHalt = {
+      enabled: typeof autoHalt.enabled === 'boolean' ? autoHalt.enabled : cur.enabled,
+      windowMinutes: clampInt(autoHalt.windowMinutes, 1, 1440, cur.windowMinutes),
+      minSamples: clampInt(autoHalt.minSamples, 1, 100000, cur.minSamples),
+      minFailures: clampInt(autoHalt.minFailures, 1, 100000, cur.minFailures),
+      failureRate: Number.isFinite(rate) ? Math.max(0, Math.min(1, rate)) : cur.failureRate,
+    };
+  }
   store.setConfig(patch);
   res.json({ ok: true, config: store.config });
 });

@@ -12,11 +12,29 @@ export interface PatchRecord {
   uploadedAt: number;
 }
 
+export interface AutoHalt {
+  enabled: boolean;
+  windowMinutes: number; // look-back window for the failure-rate sample
+  minSamples: number; // need at least this many applyFinished events before acting
+  minFailures: number; // and at least this many of them failed
+  failureRate: number; // and the failed/total ratio is >= this (0..1)
+}
+
+export interface HaltEvent {
+  at: number;
+  version: string;
+  patchNumber: number;
+  ok: number;
+  fail: number;
+  rate: number;
+}
+
 export interface Config {
   activeVersion: string | null;
   rolloutPercent: number; // 0..100
   channel: string;
   killed: number[]; // rolled-back patchNumbers
+  autoHalt: AutoHalt;
 }
 
 interface Db {
@@ -24,13 +42,27 @@ interface Db {
   config: Config;
 }
 
+export const DEFAULT_AUTO_HALT: AutoHalt = {
+  enabled: false,
+  windowMinutes: 30,
+  minSamples: 10,
+  minFailures: 3,
+  failureRate: 0.2,
+};
+
 const DATA_DIR = process.env.FP_DATA_DIR || join(process.cwd(), 'data');
 const DB_FILE = join(DATA_DIR, 'db.json');
 export const PATCH_DIR = join(DATA_DIR, 'patches');
 
 const DEFAULT_DB: Db = {
   patches: [],
-  config: { activeVersion: null, rolloutPercent: 100, channel: '', killed: [] },
+  config: {
+    activeVersion: null,
+    rolloutPercent: 100,
+    channel: '',
+    killed: [],
+    autoHalt: { ...DEFAULT_AUTO_HALT },
+  },
 };
 
 function ensureDir(p: string) {
@@ -43,9 +75,18 @@ export class Store {
   constructor() {
     ensureDir(DATA_DIR);
     ensureDir(PATCH_DIR);
-    this.db = existsSync(DB_FILE)
-      ? { ...DEFAULT_DB, ...JSON.parse(readFileSync(DB_FILE, 'utf8')) }
-      : structuredClone(DEFAULT_DB);
+    this.db = structuredClone(DEFAULT_DB);
+    if (existsSync(DB_FILE)) {
+      try {
+        const loaded = JSON.parse(readFileSync(DB_FILE, 'utf8'));
+        this.db = {
+          patches: Array.isArray(loaded.patches) ? loaded.patches : [],
+          config: { ...DEFAULT_DB.config, ...(loaded.config ?? {}), autoHalt: { ...DEFAULT_AUTO_HALT, ...(loaded.config?.autoHalt ?? {}) } },
+        };
+      } catch (e) {
+        console.error(`[store] db.json is unreadable, starting from defaults: ${(e as Error).message}`);
+      }
+    }
   }
 
   private persist() {
