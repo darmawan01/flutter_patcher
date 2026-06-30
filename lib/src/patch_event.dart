@@ -49,6 +49,12 @@ class PatchEvent {
   /// Developer-facing detail. Not for end users.
   final String? message;
 
+  /// Stable per-install id (same one used for staged-rollout bucketing), stamped
+  /// on by the SDK when available. Forward it with telemetry so the server can
+  /// count *distinct devices* per patch instead of raw event counts. Opt-in:
+  /// nothing is sent unless your `onEvent` POSTs these events somewhere.
+  final String? installId;
+
   const PatchEvent({
     required this.type,
     this.version,
@@ -57,7 +63,33 @@ class PatchEvent {
     this.error,
     this.boot,
     this.message,
+    this.installId,
   });
+
+  /// Returns a copy with [installId] set (used internally to stamp the id on).
+  PatchEvent copyWith({String? installId}) => PatchEvent(
+        type: type,
+        version: version,
+        patchNumber: patchNumber,
+        ok: ok,
+        error: error,
+        boot: boot,
+        message: message,
+        installId: installId ?? this.installId,
+      );
+
+  /// JSON form for posting to a telemetry sink (e.g. the reference server's
+  /// `/api/telemetry`). Uses the short enum name (`applyFinished`), matching the
+  /// dashboard's expectations.
+  Map<String, dynamic> toJson() => {
+        'type': type.name,
+        if (version != null) 'version': version,
+        if (patchNumber != null) 'patchNumber': patchNumber,
+        if (ok != null) 'ok': ok,
+        if (error != null) 'error': error!.name,
+        if (message != null) 'message': message,
+        if (installId != null) 'installId': installId,
+      };
 
   @override
   String toString() {

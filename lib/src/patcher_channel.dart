@@ -114,6 +114,12 @@ class PatcherChannel {
     return channel.invokeMethod<String>('deviceAbi');
   }
 
+  /// Stable per-install id (the same one used for staged-rollout bucketing).
+  /// Used to stamp telemetry events so the server can count distinct devices.
+  static Future<String?> installId() async {
+    return channel.invokeMethod<String>('installId');
+  }
+
   /// 已知"装上就出事"的补丁本地黑名单。原生侧返回 List<Map>，由调用方
   /// 用 `BlacklistEntry.fromNative` 反序列化。
   static Future<List<dynamic>?> blacklist() async {

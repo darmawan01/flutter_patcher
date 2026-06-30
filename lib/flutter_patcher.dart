@@ -45,12 +45,17 @@ class FlutterPatcher {
   static bool _firstFrameReported = false;
   static bool _bootReported = false;
   static void Function(PatchEvent)? _onEvent;
+  static String? _installId; // stable per-install id, stamped onto events
 
   static void _emit(PatchEvent event) {
     final sink = _onEvent;
     if (sink == null) return;
+    // Stamp the install id so telemetry can count distinct devices per patch.
+    final stamped = (_installId != null && event.installId == null)
+        ? event.copyWith(installId: _installId)
+        : event;
     try {
-      sink(event);
+      sink(stamped);
     } catch (e, s) {
       _log('onEvent sink threw (ignored): $e', s);
     }
@@ -186,6 +191,12 @@ class FlutterPatcher {
     // Surface the previous cold start's decision to telemetry (crash attribution
     // for a patch that tripped the breaker shows up here). Fire-and-forget.
     if (_onEvent != null) {
+      // Fetch the stable install id once so _emit can stamp it onto every event.
+      try {
+        _installId = await PatcherChannel.installId();
+      } catch (e, s) {
+        _log('installId fetch failed (events will omit it): $e', s);
+      }
       unawaited(lastBootDiagnostic.then((d) {
         if (d != null) {
           _emit(PatchEvent(

@@ -195,7 +195,11 @@ const String kPatchPublicKey = '$publicKey';
 Future<void> setupPatcher() async {
   await FlutterPatcher.init(
     publicKeyBase64: kPatchPublicKey,
-    onEvent: (e) => debugPrint('[patcher] \$e'),
+    onEvent: (e) {
+      debugPrint('[patcher] \$e');
+      // For device adoption in the dashboard, POST e.toJson() to
+      // '\$kPatchCheckUrl'.replaceFirst('/check', '/api/telemetry') (e.g. via package:http).
+    },
   );
   // Downloads + verifies + stages any patch; it goes live on the NEXT cold start.
   final r = await FlutterPatcher.checkAndStage(kPatchCheckUrl);

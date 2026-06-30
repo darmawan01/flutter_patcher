@@ -383,11 +383,19 @@ function go(v){
 window.go = go;
 
 // applies (ok applyFinished) per patchNumber, from telemetry
+// Applies per patch — distinct devices (by installId) when events carry one,
+// else raw ok-apply counts as a fallback.
 function adoption(tel){
+  const sets = {}, counts = {};
+  tel.forEach(function(t){ const e=t.event||{}; if(etype(e)!=='applyFinished'||!e.ok||e.patchNumber==null) return;
+    counts[e.patchNumber]=(counts[e.patchNumber]||0)+1;
+    if(e.installId){ (sets[e.patchNumber]=sets[e.patchNumber]||{})[e.installId]=1; }
+  });
   const m = {};
-  tel.forEach(function(t){ const e=t.event||{}; if(etype(e)==='applyFinished' && e.ok && e.patchNumber!=null){ m[e.patchNumber]=(m[e.patchNumber]||0)+1; } });
+  Object.keys(counts).forEach(function(pn){ m[pn] = sets[pn] ? Object.keys(sets[pn]).length : counts[pn]; });
   return m;
 }
+function hasInstallIds(tel){ return tel.some(function(t){ return (t.event||{}).installId; }); }
 
 function channelState(s, name){
   const def = s.config.channel || '';
@@ -400,9 +408,9 @@ function renderMetrics(s){
   const cs = channelState(s, selectedChannel);
   const active = s.patches.find(function(p){ return p.version === cs.activeVersion; });
   const since = Date.now() - DAY;
-  let ap24=0, fail24=0, staged24=0;
+  let ap24=0, fail24=0, staged24=0; const devs={};
   s.telemetry.forEach(function(t){ if(t.at<since) return; const e=t.event||{}; const ty=etype(e);
-    if(ty==='applyFinished'){ if(e.ok) ap24++; else fail24++; } if(ty==='staged') staged24++; });
+    if(ty==='applyFinished'){ if(e.ok){ ap24++; if(e.installId) devs[e.installId]=1; } else fail24++; } if(ty==='staged') staged24++; });
   $('chip-active').textContent = (selectedChannel ? selectedChannel+': ' : '') + (active ? active.version + ' · #' + active.patchNumber : 'none');
   const cards = [
     ['Active patch', active ? esc(active.version) : '—', active ? '#'+active.patchNumber+' · vc '+active.targetVersionCode : 'nothing live', 'accent'],
@@ -411,6 +419,8 @@ function renderMetrics(s){
     ['Applies 24h', String(ap24), staged24+' staged', 'good'],
     ['Failures 24h', String(fail24), fail24 ? 'check telemetry' : 'all clear', fail24 ? 'bad' : ''],
   ];
+  // Only meaningful once devices report an installId with their telemetry.
+  if (hasInstallIds(s.telemetry)) cards.push(['Devices 24h', String(Object.keys(devs).length), 'distinct installs', 'accent']);
   $('metrics').innerHTML = cards.map(function(c){
     return '<div class="metric '+c[3]+'"><div class="k">'+c[0]+'</div><div class="v">'+c[1]+'</div><div class="d">'+c[2]+'</div></div>';
   }).join('');
