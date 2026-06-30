@@ -25,11 +25,20 @@ dependencies:
   archive: '>=3.4.10 <5.0.0'
   args: '>=2.4.0 <3.0.0'
   crypto: '>=3.0.3 <4.0.0'
+  # pure-Dart Ed25519 for the keygen/sign/doctor CLIs (dev-time tooling only)
+  ed25519_edwards: '>=0.3.1 <0.4.0'
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
+
+# Dev-time tooling. Run with `dart run flutter_patcher:<name>`.
+executables:
+  keygen:
+  pack:
+  doctor:
+  mock_server:
 
 flutter:
   plugin:

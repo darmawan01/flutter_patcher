@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:archive/archive.dart';
 import 'package:args/args.dart';
 import 'package:crypto/crypto.dart';
+import 'package:flutter_patcher/src/signing.dart';
 
 const _abiPriority = <String>['arm64-v8a', 'armeabi-v7a', 'x86_64'];
 const _flutterAssetsPrefix = 'assets/flutter_assets/';
@@ -43,6 +44,12 @@ Future<int> main(List<String> argv) async {
       'patch-number',
       help: 'Monotonic patch sequence number (integer). Bound into the signed '
           'manifest and enforced for downgrade protection on device.',
+    )
+    ..addOption(
+      'key',
+      help: 'Ed25519 signing seed (base64 from `keygen`), or @path/to/seed file. '
+          'When set, the manifest is signed in place (requires --patch-number). '
+          'Without it the patch is unsigned (integrity-only).',
     )
     ..addOption(
       'abi',
@@ -98,6 +105,26 @@ Future<int> main(List<String> argv) async {
     patchNumber = int.tryParse(pnRaw);
     if (patchNumber == null) {
       stderr.writeln('error: --patch-number must be an integer.');
+      return 64;
+    }
+  }
+
+  // Resolve the optional signing seed (literal base64 or @file).
+  String? signingSeed;
+  final keyArg = args['key'] as String?;
+  if (keyArg != null && keyArg.isNotEmpty) {
+    if (keyArg.startsWith('@')) {
+      final keyFile = File(keyArg.substring(1));
+      if (!keyFile.existsSync()) {
+        stderr.writeln('error: --key file not found: ${keyArg.substring(1)}');
+        return 66;
+      }
+      signingSeed = keyFile.readAsStringSync().trim();
+    } else {
+      signingSeed = keyArg.trim();
+    }
+    if (patchNumber == null) {
+      stderr.writeln('error: signing (--key) requires --patch-number.');
       return 64;
     }
   }
@@ -187,6 +214,7 @@ Future<int> main(List<String> argv) async {
       version: version,
       targetVersionCode: targetVersionCode,
       patchNumber: patchNumber,
+      signingSeed: signingSeed,
       requestedAssets: requestedAssets,
     );
     return 0;
@@ -203,6 +231,7 @@ void _writePatchPackage({
   required String version,
   required int targetVersionCode,
   required int? patchNumber,
+  required String? signingSeed,
   required List<String> requestedAssets,
 }) {
   final patchFiles = <String, _PatchAssetFile>{};
@@ -319,12 +348,23 @@ void _writePatchPackage({
   outZip.writeAsBytesSync(packageBytes);
 
   final payloadSha256 = sha256.convert(packageBytes).toString();
+  String? signature;
+  if (signingSeed != null) {
+    final manifest = PatchSigning.canonicalManifest(
+      version: version,
+      patchNumber: patchNumber!,
+      targetVersionCode: targetVersionCode,
+      sha256: payloadSha256,
+    );
+    signature = PatchSigning.sign(signingSeed, manifest);
+  }
   final outerManifest = <String, dynamic>{
     'schemaVersion': 2,
     'version': version,
     'sha256': payloadSha256,
     'targetVersionCode': targetVersionCode,
     if (patchNumber != null) 'patchNumber': patchNumber,
+    if (signature != null) 'signature': signature,
     'abis': libVariants.map((v) => v.abi).toList(),
     'payload': 'patch.zip',
   };
@@ -336,6 +376,7 @@ void _writePatchPackage({
   }
   stdout.writeln('[pack] payload: ${outZip.path}');
   stdout.writeln('[pack] sha256: $payloadSha256');
+  stdout.writeln('[pack] signature: ${signature != null ? 'signed' : 'NONE (unsigned)'}');
   stdout.writeln('[pack] manifest: ${outDir.path}/manifest.json');
 }
 
