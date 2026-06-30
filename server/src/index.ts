@@ -24,6 +24,9 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 200
 const telemetry: unknown[] = [];
 
 const app = express();
+// Behind a TLS-terminating proxy (Railway/Fly/Heroku/nginx), honor
+// X-Forwarded-Proto so req.protocol is 'https' and patchUrl is built as https.
+app.set('trust proxy', true);
 app.use(express.json());
 
 // Health check (for Railway / load balancers).
