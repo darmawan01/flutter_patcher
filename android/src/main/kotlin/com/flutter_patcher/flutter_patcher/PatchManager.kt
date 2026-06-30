@@ -669,44 +669,75 @@ internal class PatchManager(
             if (!isSafeZipPath(libPath)) {
                 return ApplyResult.failure(ApplyErrorCode.ASSET_PACKAGE_INVALID, "bad lib path")
             }
+            val format = libInfo.optString("format", "full")
             // Base-binary drift guard: if the patch records the base libapp.so it was
             // built against, refuse to apply it onto a different (same-versionCode)
-            // base — that would mean a Dart snapshot vs engine mismatch and a crash.
+            // base — engine drift would mean a Dart-snapshot mismatch and a crash.
+            // A delta patch needs the base bytes anyway, so its base check is implicit.
             val baseSha256 = libInfo.optString("baseSha256")
-            if (baseSha256.isNotEmpty()) {
-                val installedBaseSha256 = installedBaseLibSha256(abi)
-                if (installedBaseSha256 == null) {
-                    return ApplyResult.failure(
-                        ApplyErrorCode.BASE_MISMATCH,
-                        "cannot read installed base libapp.so for $abi to verify base"
-                    )
-                }
-                if (!installedBaseSha256.equals(baseSha256, ignoreCase = true)) {
-                    return ApplyResult.failure(
-                        ApplyErrorCode.BASE_MISMATCH,
-                        "patch base mismatch: expected $baseSha256, installed $installedBaseSha256"
-                    )
-                }
-            }
-            val libEntry = zip.getEntry(libPath)
-                ?: return ApplyResult.failure(
-                    ApplyErrorCode.ASSET_PACKAGE_INVALID,
-                    "missing $libPath"
-                )
             val stagedSo = File(stagingDir, "libapp_patch.so")
             resetStaging()
-            extractZipEntry(zip, libEntry, stagedSo)
-            // Inner lib hash stays MD5: it is a corruption check of an entry that
-            // already lives inside the SHA-256-signed patch.zip, not a signed value.
-            val installedLibMd5 = SignatureVerifier.md5(stagedSo)
-            val expectedLibMd5 = libInfo.optString("md5")
-            if (expectedLibMd5.isNotEmpty() &&
-                !installedLibMd5.equals(expectedLibMd5, ignoreCase = true)
-            ) {
-                return ApplyResult.failure(
-                    ApplyErrorCode.MD5_MISMATCH,
-                    "lib md5 mismatch for $libPath"
-                )
+
+            if (format == "delta") {
+                // Reconstruct the new .so from the installed (pristine APK) base lib.
+                val baseBytes = installedBaseLibBytes(abi)
+                    ?: return ApplyResult.failure(
+                        ApplyErrorCode.BASE_MISMATCH,
+                        "cannot read installed base libapp.so for $abi (delta needs it)"
+                    )
+                if (baseSha256.isNotEmpty()) {
+                    val installedBaseSha = sha256OfBytes(baseBytes)
+                    if (!installedBaseSha.equals(baseSha256, ignoreCase = true)) {
+                        return ApplyResult.failure(
+                            ApplyErrorCode.BASE_MISMATCH,
+                            "delta base mismatch: expected $baseSha256, installed $installedBaseSha"
+                        )
+                    }
+                }
+                val deltaEntry = zip.getEntry(libPath)
+                    ?: return ApplyResult.failure(ApplyErrorCode.ASSET_PACKAGE_INVALID, "missing $libPath")
+                val deltaBytes = zip.getInputStream(deltaEntry).use { it.readBytes() }
+                val rebuilt = try {
+                    DeltaPatch.apply(baseBytes, deltaBytes)
+                } catch (e: DeltaPatch.DeltaFormatException) {
+                    return ApplyResult.failure(ApplyErrorCode.ASSET_PACKAGE_INVALID, "bad delta: ${e.message}")
+                }
+                FileOutputStream(stagedSo).use { it.write(rebuilt); it.fd.sync() }
+                // The reconstructed .so MUST hash to the manifest's new-lib sha256.
+                val expectedNewSha = libInfo.optString("sha256")
+                val rebuiltSha = SignatureVerifier.sha256(stagedSo)
+                if (expectedNewSha.isEmpty() || !rebuiltSha.equals(expectedNewSha, ignoreCase = true)) {
+                    return ApplyResult.failure(
+                        ApplyErrorCode.MD5_MISMATCH,
+                        "delta reconstruction sha mismatch: expected $expectedNewSha, got $rebuiltSha"
+                    )
+                }
+            } else {
+                if (baseSha256.isNotEmpty()) {
+                    val installedBaseSha256 = installedBaseLibSha256(abi)
+                        ?: return ApplyResult.failure(
+                            ApplyErrorCode.BASE_MISMATCH,
+                            "cannot read installed base libapp.so for $abi to verify base"
+                        )
+                    if (!installedBaseSha256.equals(baseSha256, ignoreCase = true)) {
+                        return ApplyResult.failure(
+                            ApplyErrorCode.BASE_MISMATCH,
+                            "patch base mismatch: expected $baseSha256, installed $installedBaseSha256"
+                        )
+                    }
+                }
+                val libEntry = zip.getEntry(libPath)
+                    ?: return ApplyResult.failure(ApplyErrorCode.ASSET_PACKAGE_INVALID, "missing $libPath")
+                extractZipEntry(zip, libEntry, stagedSo)
+                // Inner lib hash stays MD5: corruption check of an entry already inside
+                // the SHA-256-signed patch.zip, not a signed value.
+                val installedLibMd5 = SignatureVerifier.md5(stagedSo)
+                val expectedLibMd5 = libInfo.optString("md5")
+                if (expectedLibMd5.isNotEmpty() &&
+                    !installedLibMd5.equals(expectedLibMd5, ignoreCase = true)
+                ) {
+                    return ApplyResult.failure(ApplyErrorCode.MD5_MISMATCH, "lib md5 mismatch for $libPath")
+                }
             }
             // Boot-time integrity re-checks the installed .so against its SHA-256.
             val installedLibSha256 = SignatureVerifier.sha256(stagedSo)
@@ -1037,28 +1068,29 @@ internal class PatchManager(
 
     /** SHA-256 of the installed APK's `lib/<abi>/libapp.so` (the base the patch replaces), or null. */
     private fun installedBaseLibSha256(abi: String): String? {
+        val bytes = installedBaseLibBytes(abi) ?: return null
+        return sha256OfBytes(bytes)
+    }
+
+    /** Raw bytes of the installed APK's `lib/<abi>/libapp.so` (the delta base), or null. */
+    private fun installedBaseLibBytes(abi: String): ByteArray? {
         val entryName = "lib/$abi/libapp.so"
         for (apkPath in installedApkPaths()) {
             try {
                 ZipFile(apkPath).use { zip ->
                     val entry = zip.getEntry(entryName) ?: return@use
-                    val digest = MessageDigest.getInstance("SHA-256")
-                    zip.getInputStream(entry).use { input ->
-                        val buf = ByteArray(8192)
-                        while (true) {
-                            val n = input.read(buf)
-                            if (n <= 0) break
-                            digest.update(buf, 0, n)
-                        }
-                    }
-                    return digest.digest().joinToString("") { "%02x".format(it) }
+                    return zip.getInputStream(entry).use { it.readBytes() }
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "failed to hash base libapp.so in $apkPath", e)
+                Log.w(TAG, "failed to read base libapp.so in $apkPath", e)
             }
         }
         return null
     }
+
+    private fun sha256OfBytes(bytes: ByteArray): String =
+        MessageDigest.getInstance("SHA-256").digest(bytes)
+            .joinToString("") { "%02x".format(it) }
 
     private fun overlayPatchAssets(zip: ZipFile, assets: JSONObject, stagingAssets: File) {
         val prefix = assets.optString("prefix", "assets/")

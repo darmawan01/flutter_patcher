@@ -24,7 +24,7 @@ void main() {
       await File('${dist.path}/manifest.json').writeAsString(
         jsonEncode({
           'version': '1.0.0-h1',
-          'md5': crypto.md5.convert(bytes).toString(),
+          'sha256': crypto.sha256.convert(bytes).toString(),
           'targetVersionCode': 100,
           'payload': 'libapp.so',
         }),
@@ -32,7 +32,7 @@ void main() {
 
       final patch = await mock_server.loadMockPatch(dist: dist.path);
       expect(patch.version, '1.0.0-h1');
-      expect(patch.md5, crypto.md5.convert(bytes).toString());
+      expect(patch.sha256, crypto.sha256.convert(bytes).toString());
       expect(patch.targetVersionCode, 100);
       expect(patch.payload, 'libapp.so');
 
@@ -49,7 +49,7 @@ void main() {
       expect(check['hasUpdate'], isTrue);
       final patchJson = check['patch'] as Map<String, dynamic>;
       expect(patchJson['version'], '1.0.0-h1');
-      expect(patchJson['md5'], crypto.md5.convert(bytes).toString());
+      expect(patchJson['sha256'], crypto.sha256.convert(bytes).toString());
       expect(patchJson['targetVersionCode'], 100);
       expect(
         patchJson['patchUrl'],
@@ -82,7 +82,7 @@ void main() {
       await File('${dist.path}/manifest.json').writeAsString(
         jsonEncode({
           'version': '1.0.0-h1',
-          'md5': crypto.md5.convert(bytes).toString(),
+          'sha256': crypto.sha256.convert(bytes).toString(),
           'targetVersionCode': 100,
           'payload': 'patch.zip',
         }),
@@ -133,7 +133,7 @@ void main() {
         targetVersionCode: 42,
       );
       expect(patch.version, 'dev-1');
-      expect(patch.md5, crypto.md5.convert(bytes).toString());
+      expect(patch.sha256, crypto.sha256.convert(bytes).toString());
       expect(patch.targetVersionCode, 42);
 
       final server = await mock_server.startMockPatchServer(
@@ -148,7 +148,7 @@ void main() {
       final check = await _getJson('http://127.0.0.1:${server.port}/check');
       final patchJson = check['patch'] as Map<String, dynamic>;
       expect(patchJson['version'], 'dev-1');
-      expect(patchJson['md5'], crypto.md5.convert(bytes).toString());
+      expect(patchJson['sha256'], crypto.sha256.convert(bytes).toString());
       expect(patchJson['targetVersionCode'], 42);
     });
 

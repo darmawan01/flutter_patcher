@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:archive/archive.dart';
 import 'package:args/args.dart';
 import 'package:crypto/crypto.dart';
+import 'package:flutter_patcher/src/delta.dart';
 import 'package:flutter_patcher/src/signing.dart';
 
 const _abiPriority = <String>['arm64-v8a', 'armeabi-v7a', 'x86_64'];
@@ -23,6 +24,13 @@ Future<int> main(List<String> argv) async {
       help: 'Optional path to the BASE release APK this patch upgrades FROM. '
           'Records the base libapp.so SHA-256 so the device refuses to apply '
           'the patch onto a different same-versionCode base (engine drift).',
+    )
+    ..addOption(
+      'from-apk',
+      help: 'Optional BASE release APK to DELTA against (implies base fingerprint). '
+          'Ships a per-ABI binary diff instead of the full libapp.so; the device '
+          'reconstructs and verifies. Falls back to full per-ABI when no saving. '
+          'Mutually exclusive with --base-apk.',
     )
     ..addMultiOption(
       'assets',
@@ -204,14 +212,21 @@ Future<int> main(List<String> argv) async {
     abis = requestedAbis;
   }
 
-  // Optional base APK: per-ABI SHA-256 of the base libapp.so this patch upgrades
-  // from, so the device refuses to apply onto a drifted base.
-  Archive? baseArchive;
+  // Optional base APK. --base-apk only fingerprints (full payload + drift guard);
+  // --from-apk additionally produces a per-ABI binary delta against that base.
   final baseApkPath = args['base-apk'] as String?;
-  if (baseApkPath != null) {
-    final baseApk = File(baseApkPath);
+  final fromApkPath = args['from-apk'] as String?;
+  if (baseApkPath != null && fromApkPath != null) {
+    stderr.writeln('error: use --base-apk OR --from-apk, not both.');
+    return 64;
+  }
+  final deltaMode = fromApkPath != null;
+  final basePath = fromApkPath ?? baseApkPath;
+  Archive? baseArchive;
+  if (basePath != null) {
+    final baseApk = File(basePath);
     if (!baseApk.existsSync()) {
-      stderr.writeln('error: --base-apk not found: $baseApkPath');
+      stderr.writeln('error: base APK not found: $basePath');
       return 66;
     }
     baseArchive = ZipDecoder().decodeBytes(baseApk.readAsBytesSync());
@@ -219,19 +234,43 @@ Future<int> main(List<String> argv) async {
 
   final libVariants = <_LibVariant>[];
   for (final abi in abis) {
-    final soBytes = _archiveFileBytes(available[abi]!);
+    final soBytes = Uint8List.fromList(_archiveFileBytes(available[abi]!));
     String? baseLibSha256;
+    Uint8List? deltaBytes;
+    String? newLibSha256;
     if (baseArchive != null) {
       final baseSo = _findFile(baseArchive, 'lib/$abi/libapp.so');
       if (baseSo == null) {
-        stderr.writeln('error: lib/$abi/libapp.so not found in --base-apk.');
+        stderr.writeln('error: lib/$abi/libapp.so not found in base APK.');
         return 1;
       }
-      baseLibSha256 = sha256.convert(_archiveFileBytes(baseSo)).toString();
+      final baseBytes = Uint8List.fromList(_archiveFileBytes(baseSo));
+      baseLibSha256 = sha256.convert(baseBytes).toString();
+      if (deltaMode) {
+        final delta = DeltaCodec.buildDelta(baseBytes, soBytes);
+        // Only ship a delta when it actually saves (< 90% of the full .so).
+        if (delta.length < (soBytes.length * 9) ~/ 10) {
+          deltaBytes = delta;
+          newLibSha256 = sha256.convert(soBytes).toString();
+          stdout.writeln('[pack] delta lib/$abi: ${_fmtBytes(delta.length)} '
+              '(full ${_fmtBytes(soBytes.length)})');
+        } else {
+          stdout.writeln('[pack] delta lib/$abi not worthwhile '
+              '(${_fmtBytes(delta.length)} ≥ 90% of ${_fmtBytes(soBytes.length)}); shipping full');
+        }
+      }
     }
-    libVariants.add(_LibVariant(abi: abi, soBytes: soBytes, baseSha256: baseLibSha256));
-    stdout.writeln('[pack] extracted lib/$abi/libapp.so '
-        '(${_fmtBytes(soBytes.length)})${baseLibSha256 != null ? ' base=$baseLibSha256' : ''}');
+    if (deltaBytes == null) {
+      stdout.writeln('[pack] extracted lib/$abi/libapp.so '
+          '(${_fmtBytes(soBytes.length)})${baseLibSha256 != null ? ' base=$baseLibSha256' : ''}');
+    }
+    libVariants.add(_LibVariant(
+      abi: abi,
+      soBytes: soBytes,
+      baseSha256: baseLibSha256,
+      deltaBytes: deltaBytes,
+      newLibSha256: newLibSha256,
+    ));
   }
 
   outDir.createSync(recursive: true);
@@ -327,11 +366,19 @@ void _writePatchPackage({
 
   final libMap = <String, dynamic>{
     for (final v in libVariants)
-      v.abi: {
-        'path': 'lib/${v.abi}/libapp.so',
-        'md5': md5.convert(v.soBytes).toString(),
-        if (v.baseSha256 != null) 'baseSha256': v.baseSha256,
-      },
+      v.abi: v.deltaBytes != null
+          ? {
+              'path': 'lib/${v.abi}/libapp.so.delta',
+              'format': 'delta',
+              'baseSha256': v.baseSha256,
+              'sha256': v.newLibSha256, // sha256 of the reconstructed full .so
+              'size': v.soBytes.length,
+            }
+          : {
+              'path': 'lib/${v.abi}/libapp.so',
+              'md5': md5.convert(v.soBytes).toString(),
+              if (v.baseSha256 != null) 'baseSha256': v.baseSha256,
+            },
   };
   final zipManifest = <String, dynamic>{
     'schemaVersion': 2,
@@ -355,7 +402,12 @@ void _writePatchPackage({
 
   final package = Archive()..addFile(_jsonArchiveFile('manifest.json', zipManifest));
   for (final v in libVariants) {
-    package.addFile(ArchiveFile('lib/${v.abi}/libapp.so', v.soBytes.length, v.soBytes));
+    if (v.deltaBytes != null) {
+      package.addFile(ArchiveFile(
+          'lib/${v.abi}/libapp.so.delta', v.deltaBytes!.length, v.deltaBytes!));
+    } else {
+      package.addFile(ArchiveFile('lib/${v.abi}/libapp.so', v.soBytes.length, v.soBytes));
+    }
   }
 
   if (requestedAssets.isNotEmpty) {
@@ -563,11 +615,20 @@ class _LibVariant {
     required this.abi,
     required this.soBytes,
     required this.baseSha256,
+    this.deltaBytes,
+    this.newLibSha256,
   });
 
   final String abi;
   final List<int> soBytes;
   final String? baseSha256;
+
+  /// Non-null => ship a delta for this ABI instead of the full `.so`.
+  final List<int>? deltaBytes;
+
+  /// SHA-256 of the full new `.so`; recorded so the device can verify its
+  /// delta reconstruction. Set only when [deltaBytes] is non-null.
+  final String? newLibSha256;
 }
 
 class PackException implements Exception {

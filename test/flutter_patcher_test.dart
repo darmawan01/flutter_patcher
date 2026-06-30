@@ -7,14 +7,14 @@ void main() {
       final info = PatchInfo.fromJson({
         'version': '1.0.1-h1',
         'patchUrl': 'https://example.com/libapp.so',
-        'md5': 'd41d8cd98f00b204e9800998ecf8427e',
+        'sha256': 'd41d8cd98f00b204e9800998ecf8427e',
         'signature': 'sig-base64',
         'targetVersionCode': 100,
       });
 
       expect(info.version, '1.0.1-h1');
       expect(info.patchUrl, 'https://example.com/libapp.so');
-      expect(info.md5, 'd41d8cd98f00b204e9800998ecf8427e');
+      expect(info.sha256, 'd41d8cd98f00b204e9800998ecf8427e');
       expect(info.signature, 'sig-base64');
       expect(info.targetVersionCode, 100);
     });
@@ -23,7 +23,7 @@ void main() {
       final info = PatchInfo.fromJson({
         'version': 'v2',
         'patch_url': 'https://example.com/p2.so',
-        'md5': '00',
+        'sha256': '00',
         'target_version_code': '200',
       });
 
@@ -35,7 +35,7 @@ void main() {
       const info = PatchInfo(
         version: 'v1',
         patchUrl: 'https://example.com/x.so',
-        md5: 'aa',
+        sha256: 'aa',
       );
       final json = info.toJson();
       expect(json.containsKey('targetVersionCode'), isFalse);
@@ -47,7 +47,7 @@ void main() {
         version: 'v1',
         patchUrl: 'https://example.com/x.so',
       );
-      expect(info.md5, '');
+      expect(info.sha256, '');
       expect(info.signature, '');
     });
 
@@ -56,7 +56,7 @@ void main() {
         'version': 'v1',
         'patchUrl': 'https://example.com/x.so',
       });
-      expect(info.md5, '');
+      expect(info.sha256, '');
     });
 
     test('toJson omits md5 key when md5 is empty', () {
@@ -65,17 +65,17 @@ void main() {
         patchUrl: 'https://example.com/x.so',
       );
       final json = info.toJson();
-      expect(json.containsKey('md5'), isFalse);
+      expect(json.containsKey('sha256'), isFalse);
     });
 
     test('toJson includes md5 key when md5 is non-empty', () {
       const info = PatchInfo(
         version: 'v1',
         patchUrl: 'https://example.com/x.so',
-        md5: 'aa',
+        sha256: 'aa',
       );
       final json = info.toJson();
-      expect(json['md5'], 'aa');
+      expect(json['sha256'], 'aa');
     });
   });
 
@@ -140,7 +140,7 @@ void main() {
         'patch': {
           'version': 'v3',
           'patchUrl': 'https://example.com/v3.so',
-          'md5': 'cc',
+          'sha256': 'cc',
         },
       });
       expect(r.hasUpdate, isTrue);
@@ -152,7 +152,7 @@ void main() {
         'has_update': true,
         'version': '1.0.0-h2',
         'patch_url': 'https://example.com/arm64-v8a/libapp.so',
-        'md5': '0123456789abcdef0123456789abcdef',
+        'sha256': '0123456789abcdef0123456789abcdef',
         'target_version_code': 100,
       });
 

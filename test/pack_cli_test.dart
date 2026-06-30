@@ -48,8 +48,8 @@ void main() {
     expect(outerManifest['schemaVersion'], 2);
     expect(outerManifest['payload'], 'patch.zip');
     expect(outerManifest['targetVersionCode'], 100);
-    expect(outerManifest['abi'], 'arm64-v8a');
-    expect(outerManifest['md5'], md5.convert(patchZipBytes).toString());
+    expect(outerManifest['abis'], ['arm64-v8a']);
+    expect(outerManifest['sha256'], sha256.convert(patchZipBytes).toString());
 
     final patchZip = ZipDecoder().decodeBytes(patchZipBytes);
     final entryNames = patchZip.files.map((f) => f.name).toSet();
@@ -146,8 +146,8 @@ void main() {
     ) as Map<String, dynamic>;
     expect(outerManifest['payload'], 'patch.zip');
     expect(
-        outerManifest['md5'],
-        md5
+        outerManifest['sha256'],
+        sha256
             .convert(
               await File('${outDir.path}/patch.zip').readAsBytes(),
             )
