@@ -46,7 +46,8 @@ Future<int> main(List<String> argv) async {
     )
     ..addOption(
       'abi',
-      help: 'ABI to extract. Default: first match among $_abiPriority.',
+      help: 'ABI(s) to pack, comma-separated (e.g. arm64-v8a,armeabi-v7a). '
+          'Default: every ABI present in the APK. The device picks its own.',
     )
     ..addOption(
       'out',
@@ -123,24 +124,33 @@ Future<int> main(List<String> argv) async {
   final apkBytes = apkFile.readAsBytesSync();
   final archive = ZipDecoder().decodeBytes(apkBytes);
 
-  final chosen = _pickLibappSo(archive, preferredAbi);
-  if (chosen == null) {
-    stderr.writeln(
-      'error: libapp.so not found in APK for any of $_abiPriority '
-      '(or requested --abi $preferredAbi).',
-    );
+  final available = _collectLibappSo(archive);
+  if (available.isEmpty) {
+    stderr.writeln('error: no lib/<abi>/libapp.so found in APK.');
     return 1;
   }
 
-  final abi = chosen.$1;
-  final soBytes = _archiveFileBytes(chosen.$2);
-  stdout.writeln(
-    '[pack] extracted lib/$abi/libapp.so (${_fmtBytes(soBytes.length)})',
-  );
+  // --abi accepts a comma-separated list; default = every ABI in the APK.
+  final requestedAbis = (preferredAbi == null || preferredAbi.trim().isEmpty)
+      ? <String>[]
+      : preferredAbi.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
+  final List<String> abis;
+  if (requestedAbis.isEmpty) {
+    abis = available.keys.toList();
+  } else {
+    for (final a in requestedAbis) {
+      if (!available.containsKey(a)) {
+        stderr.writeln('error: requested --abi $a not in APK '
+            '(present: ${available.keys.join(", ")}).');
+        return 1;
+      }
+    }
+    abis = requestedAbis;
+  }
 
-  // Optional base fingerprint: SHA-256 of the same-ABI libapp.so in the base APK
-  // this patch upgrades from. The device checks its installed base matches.
-  String? baseLibSha256;
+  // Optional base APK: per-ABI SHA-256 of the base libapp.so this patch upgrades
+  // from, so the device refuses to apply onto a drifted base.
+  Archive? baseArchive;
   final baseApkPath = args['base-apk'] as String?;
   if (baseApkPath != null) {
     final baseApk = File(baseApkPath);
@@ -148,14 +158,24 @@ Future<int> main(List<String> argv) async {
       stderr.writeln('error: --base-apk not found: $baseApkPath');
       return 66;
     }
-    final baseArchive = ZipDecoder().decodeBytes(baseApk.readAsBytesSync());
-    final baseSo = _findFile(baseArchive, 'lib/$abi/libapp.so');
-    if (baseSo == null) {
-      stderr.writeln('error: lib/$abi/libapp.so not found in --base-apk.');
-      return 1;
+    baseArchive = ZipDecoder().decodeBytes(baseApk.readAsBytesSync());
+  }
+
+  final libVariants = <_LibVariant>[];
+  for (final abi in abis) {
+    final soBytes = _archiveFileBytes(available[abi]!);
+    String? baseLibSha256;
+    if (baseArchive != null) {
+      final baseSo = _findFile(baseArchive, 'lib/$abi/libapp.so');
+      if (baseSo == null) {
+        stderr.writeln('error: lib/$abi/libapp.so not found in --base-apk.');
+        return 1;
+      }
+      baseLibSha256 = sha256.convert(_archiveFileBytes(baseSo)).toString();
     }
-    baseLibSha256 = sha256.convert(_archiveFileBytes(baseSo)).toString();
-    stdout.writeln('[pack] base libapp.so sha256: $baseLibSha256');
+    libVariants.add(_LibVariant(abi: abi, soBytes: soBytes, baseSha256: baseLibSha256));
+    stdout.writeln('[pack] extracted lib/$abi/libapp.so '
+        '(${_fmtBytes(soBytes.length)})${baseLibSha256 != null ? ' base=$baseLibSha256' : ''}');
   }
 
   outDir.createSync(recursive: true);
@@ -163,12 +183,10 @@ Future<int> main(List<String> argv) async {
     _writePatchPackage(
       outDir: outDir,
       archive: archive,
-      abi: abi,
-      soBytes: soBytes,
+      libVariants: libVariants,
       version: version,
       targetVersionCode: targetVersionCode,
       patchNumber: patchNumber,
-      baseLibSha256: baseLibSha256,
       requestedAssets: requestedAssets,
     );
     return 0;
@@ -181,12 +199,10 @@ Future<int> main(List<String> argv) async {
 void _writePatchPackage({
   required Directory outDir,
   required Archive archive,
-  required String abi,
-  required List<int> soBytes,
+  required List<_LibVariant> libVariants,
   required String version,
   required int targetVersionCode,
   required int? patchNumber,
-  required String? baseLibSha256,
   required List<String> requestedAssets,
 }) {
   final patchFiles = <String, _PatchAssetFile>{};
@@ -247,17 +263,19 @@ void _writePatchPackage({
     }
   }
 
+  final libMap = <String, dynamic>{
+    for (final v in libVariants)
+      v.abi: {
+        'path': 'lib/${v.abi}/libapp.so',
+        'md5': md5.convert(v.soBytes).toString(),
+        if (v.baseSha256 != null) 'baseSha256': v.baseSha256,
+      },
+  };
   final zipManifest = <String, dynamic>{
     'schemaVersion': 2,
     'version': version,
     'targetVersionCode': targetVersionCode,
-    'lib': {
-      abi: {
-        'path': 'lib/$abi/libapp.so',
-        'md5': md5.convert(soBytes).toString(),
-        if (baseLibSha256 != null) 'baseSha256': baseLibSha256,
-      },
-    },
+    'lib': libMap,
     if (requestedAssets.isNotEmpty)
       'assets': {
         'mode': 'overlay',
@@ -273,9 +291,10 @@ void _writePatchPackage({
       },
   };
 
-  final package = Archive()
-    ..addFile(_jsonArchiveFile('manifest.json', zipManifest))
-    ..addFile(ArchiveFile('lib/$abi/libapp.so', soBytes.length, soBytes));
+  final package = Archive()..addFile(_jsonArchiveFile('manifest.json', zipManifest));
+  for (final v in libVariants) {
+    package.addFile(ArchiveFile('lib/${v.abi}/libapp.so', v.soBytes.length, v.soBytes));
+  }
 
   if (requestedAssets.isNotEmpty) {
     final manifestPatch = <String, dynamic>{
@@ -306,7 +325,7 @@ void _writePatchPackage({
     'sha256': payloadSha256,
     'targetVersionCode': targetVersionCode,
     if (patchNumber != null) 'patchNumber': patchNumber,
-    'abi': abi,
+    'abis': libVariants.map((v) => v.abi).toList(),
     'payload': 'patch.zip',
   };
   _writeJson(File('${outDir.path}/manifest.json'), outerManifest);
@@ -386,23 +405,22 @@ List<String> _readRequestedAssets({
   return result;
 }
 
-(String, ArchiveFile)? _pickLibappSo(Archive archive, String? preferred) {
-  final map = <String, ArchiveFile>{};
+/// All `lib/<abi>/libapp.so` in the APK, keyed by ABI, ordered by [_abiPriority]
+/// first (known ABIs) then any remaining ABIs in archive order.
+Map<String, ArchiveFile> _collectLibappSo(Archive archive) {
+  final found = <String, ArchiveFile>{};
   final regex = RegExp(r'^lib/([^/]+)/libapp\.so$');
   for (final file in archive.files) {
     final m = regex.firstMatch(file.name);
-    if (m != null) map[m.group(1)!] = file;
+    if (m != null) found[m.group(1)!] = file;
   }
-  if (preferred != null) {
-    final hit = map[preferred];
-    if (hit != null) return (preferred, hit);
-    stderr.writeln('warning: --abi $preferred not in APK; falling back');
-  }
+  final ordered = <String, ArchiveFile>{};
   for (final abi in _abiPriority) {
-    final hit = map[abi];
-    if (hit != null) return (abi, hit);
+    final hit = found.remove(abi);
+    if (hit != null) ordered[abi] = hit;
   }
-  return null;
+  ordered.addAll(found); // any non-priority ABIs (e.g. x86) keep their order
+  return ordered;
 }
 
 ArchiveFile? _findFile(Archive archive, String name) {
@@ -453,6 +471,18 @@ class _PatchAssetFile {
   final String path;
   final List<int> bytes;
   final String md5Hex;
+}
+
+class _LibVariant {
+  const _LibVariant({
+    required this.abi,
+    required this.soBytes,
+    required this.baseSha256,
+  });
+
+  final String abi;
+  final List<int> soBytes;
+  final String? baseSha256;
 }
 
 class PackException implements Exception {
