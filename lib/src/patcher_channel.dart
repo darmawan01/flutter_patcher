@@ -28,6 +28,20 @@ class PatcherChannel {
     });
   }
 
+  /// Enforce a server-driven rollback (kill switch). Native verifies [signature]
+  /// over the canonical rollback list before removing the installed patch.
+  /// Returns true if a patch was killed.
+  static Future<bool> enforceRollback(
+    List<int> rolledBack,
+    String signature,
+  ) async {
+    final killed = await channel.invokeMethod<bool>('enforceRollback', {
+      'rolledBack': rolledBack,
+      'signature': signature,
+    });
+    return killed ?? false;
+  }
+
   /// Dart init 最开头调用：标记「启动中」（与原生 attachBaseContext 的标记互相兜底）。
   static Future<void> markBooting() async {
     await channel.invokeMethod<void>('markBooting');

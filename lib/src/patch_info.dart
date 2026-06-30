@@ -298,19 +298,62 @@ class PatchCheckResult {
   /// Patch metadata. Null when [hasUpdate] is false.
   final PatchInfo? patch;
 
-  const PatchCheckResult({required this.hasUpdate, this.patch});
+  /// Server-driven kill switch: patchNumbers the server has rolled back.
+  ///
+  /// If the installed patch's number is in this list, `checkUpdate` removes it
+  /// (revert to built-in) — but only when [rolledBackSignature] verifies against
+  /// the configured public key. Empty means no rollback directive.
+  final List<int> rolledBack;
+
+  /// Base64 Ed25519 signature over the canonical rollback list. Required for the
+  /// kill switch to take effect; an unsigned list is ignored.
+  final String rolledBackSignature;
+
+  const PatchCheckResult({
+    required this.hasUpdate,
+    this.patch,
+    this.rolledBack = const [],
+    this.rolledBackSignature = '',
+  });
 
   factory PatchCheckResult.none() =>
       const PatchCheckResult(hasUpdate: false, patch: null);
 
+  static List<int> _parseRolledBack(dynamic raw) {
+    if (raw is! List) return const [];
+    final out = <int>[];
+    for (final e in raw) {
+      if (e is num) {
+        out.add(e.toInt());
+      } else if (e is String && e.isNotEmpty) {
+        final n = int.tryParse(e);
+        if (n != null) out.add(n);
+      }
+    }
+    return out;
+  }
+
   factory PatchCheckResult.fromJson(Map<String, dynamic> json) {
+    final rolledBack = _parseRolledBack(json['rolledBack'] ?? json['rolled_back']);
+    final rolledBackSignature =
+        (json['rolledBackSignature'] ?? json['rolled_back_signature'] ?? '')
+            as String;
     final hasUpdate = json['hasUpdate'] == true || json['has_update'] == true;
-    if (!hasUpdate) return PatchCheckResult.none();
+    if (!hasUpdate) {
+      return PatchCheckResult(
+        hasUpdate: false,
+        patch: null,
+        rolledBack: rolledBack,
+        rolledBackSignature: rolledBackSignature,
+      );
+    }
     final patchJson = json['patch'];
     final patchMap = patchJson is Map ? patchJson : json;
     return PatchCheckResult(
       hasUpdate: true,
       patch: PatchInfo.fromJson(Map<String, dynamic>.from(patchMap)),
+      rolledBack: rolledBack,
+      rolledBackSignature: rolledBackSignature,
     );
   }
 }

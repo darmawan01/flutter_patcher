@@ -189,7 +189,22 @@ class FlutterPatcher {
         headers: headers,
         timeout: timeout,
       );
-      return PatchCheckResult.fromJson(decoded);
+      final check = PatchCheckResult.fromJson(decoded);
+      // Server kill switch: if the response carries a signed rollback list, let
+      // native verify it and drop the installed patch before we return. This
+      // runs on every check, including when there is no new update to offer.
+      if (check.rolledBack.isNotEmpty) {
+        try {
+          final killed = await PatcherChannel.enforceRollback(
+            check.rolledBack,
+            check.rolledBackSignature,
+          );
+          if (killed) _log('server rolled back the installed patch');
+        } catch (e, s) {
+          _log('enforceRollback failed: $e', s);
+        }
+      }
+      return check;
     } on PatcherException {
       rethrow;
     } catch (e, s) {

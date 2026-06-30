@@ -491,6 +491,7 @@ internal class PatchManager(
                     effectiveSha256 = verifiedSha256,
                     signature = signature,
                     signedManifest = signedManifest,
+                    patchNumber = patchNumber ?: -1L,
                     targetVersionCode = targetVersionCode,
                 )
             } else {
@@ -501,6 +502,7 @@ internal class PatchManager(
                     effectiveSha256 = verifiedSha256,
                     signature = signature,
                     signedManifest = signedManifest,
+                    patchNumber = patchNumber ?: -1L,
                     targetVersionCode = targetVersionCode,
                 )
             }
@@ -527,6 +529,43 @@ internal class PatchManager(
         Log.d(TAG, "rolled back to built-in version")
     }
 
+    /**
+     * Server-driven kill switch. The check response carries a SIGNED list of rolled-back
+     * patchNumbers; if the installed patch is on it, delete it (revert to built-in) and
+     * blacklist it so it cannot re-apply. Returns true if a patch was killed.
+     *
+     * The signature is mandatory and verified against the configured public key — an
+     * unsigned or wrongly-signed list is ignored, so this lever can't be abused as a DoS.
+     */
+    fun enforceServerRollback(rolledBack: List<Long>, signature: String): Boolean = synchronized(APPLY_LOCK) {
+        if (rolledBack.isEmpty()) return false
+        if (signature.isBlank()) {
+            Log.w(TAG, "rollback list present but unsigned, ignoring")
+            return false
+        }
+        val sorted = rolledBack.toSortedSet().toList()
+        val publicKey = PatcherConfig.publicKey(context)
+        val strict = PatcherConfig.strictSignature(context)
+        val message = SignatureVerifier.canonicalRollback(sorted)
+        if (!SignatureVerifier.verifySignatureOnly(message, signature, publicKey, strict)) {
+            Log.w(TAG, "rollback list signature invalid, ignoring")
+            return false
+        }
+        val meta = readMeta() ?: return false
+        val installedPn = meta.optLong("patchNumber", -1L)
+        if (installedPn < 0 || installedPn !in sorted) return false
+
+        val version = meta.optString("version", "")
+        val sha = meta.optString("downloadSha256", meta.optString("effectiveSha256", ""))
+        if (version.isNotEmpty() && sha.isNotEmpty()) {
+            BlacklistStore.add(context, version, sha, BlacklistStore.REASON_ROLLED_BACK)
+        }
+        deletePatch()
+        CrashGuard(context).reset()
+        Log.w(TAG, "server rolled back patchNumber=$installedPn, reverted to built-in")
+        return true
+    }
+
     private fun installLegacyPatch(
         downloaded: File,
         version: String,
@@ -534,6 +573,7 @@ internal class PatchManager(
         effectiveSha256: String,
         signature: String,
         signedManifest: String,
+        patchNumber: Long,
         targetVersionCode: Long,
     ): ApplyResult? {
         val meta = JSONObject().apply {
@@ -542,6 +582,7 @@ internal class PatchManager(
             put("effectiveSha256", effectiveSha256)
             put("signature", signature)
             put("signedManifest", signedManifest)
+            put("patchNumber", patchNumber)
             put(PatcherConfig.META_KEY_TARGET_VERSION_CODE, targetVersionCode)
             put("hasAssets", false)
             put("installed_at", System.currentTimeMillis())
@@ -556,6 +597,7 @@ internal class PatchManager(
         effectiveSha256: String,
         signature: String,
         signedManifest: String,
+        patchNumber: Long,
         targetVersionCode: Long,
     ): ApplyResult? {
         return try {
@@ -639,6 +681,7 @@ internal class PatchManager(
                     put("payloadSha256", effectiveSha256)
                     put("payloadSignature", signature)
                     put("payloadSignedManifest", signedManifest)
+                    put("patchNumber", patchNumber)
                     put(PatcherConfig.META_KEY_TARGET_VERSION_CODE, targetVersionCode)
                     put("hasAssets", false)
                     put("installed_at", System.currentTimeMillis())
@@ -678,6 +721,7 @@ internal class PatchManager(
                 put("payloadSha256", effectiveSha256)
                 put("payloadSignature", signature)
                 put("payloadSignedManifest", signedManifest)
+                put("patchNumber", patchNumber)
                 put(PatcherConfig.META_KEY_TARGET_VERSION_CODE, targetVersionCode)
                 put("hasAssets", true)
                 put("assetMode", "overlay")

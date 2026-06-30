@@ -93,6 +93,7 @@ class FlutterPatcherPlugin :
             }
             "reportDartBootError" -> handleReportDartBootError(call, result)
             "applyPatch" -> handleApplyPatch(call, result)
+            "enforceRollback" -> handleEnforceRollback(call, result)
             "rollback" -> handleRollback(result)
             "currentVersion" -> handleCurrentVersion(result)
             "lastBootDiagnostic" -> handleLastBootDiagnostic(result)
@@ -150,6 +151,21 @@ class FlutterPatcherPlugin :
                 ApplyResult.failure(ApplyErrorCode.UNKNOWN, e.message ?: e.javaClass.simpleName)
             }
             main.post { result.success(applyResult.toMap()) }
+        }.start()
+    }
+
+    private fun handleEnforceRollback(call: MethodCall, result: Result) {
+        val rolledBack = (call.argument<List<Number>>("rolledBack") ?: emptyList())
+            .map { it.toLong() }
+        val signature = call.argument<String>("signature") ?: ""
+        Thread {
+            val killed = try {
+                PatchManager(appContext).enforceServerRollback(rolledBack, signature)
+            } catch (e: Exception) {
+                Log.e(TAG, "enforceRollback error", e)
+                false
+            }
+            main.post { result.success(killed) }
         }.start()
     }
 

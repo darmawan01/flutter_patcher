@@ -178,6 +178,21 @@ internal object SignatureVerifier {
         append("sha256=").append(sha256.lowercase())
     }
 
+    /**
+     * 规范化"已下架补丁"列表字符串（kill switch）。签名覆盖它，设备据此把已安装但被
+     * 服务端下架的补丁删除回内置版本。patchNumbers 必须**升序去重**，逗号连接，无尾换行：
+     *
+     *   flutter_patcher.rollback.v1
+     *   patchNumbers=3,5,7
+     *
+     * 签名方与设备端构造必须逐字节一致。
+     */
+    fun canonicalRollback(patchNumbers: List<Long>): String = buildString {
+        append("flutter_patcher.rollback.v1\n")
+        append("patchNumbers=")
+        append(patchNumbers.toSortedSet().joinToString(","))
+    }
+
     private fun verifyEd25519(
         hashHex: String,
         signatureBase64: String,
