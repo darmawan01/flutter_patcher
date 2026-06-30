@@ -19,6 +19,7 @@ Future<int> _run(List<String> argv) async {
     ..addOption('dir', defaultsTo: '.', help: 'Flutter project directory.')
     ..addOption('server', help: 'Patch server base URL, e.g. https://you.up.railway.app')
     ..addOption('public-key', help: 'Server public key (base64) from `npm run keygen`.')
+    ..addFlag('no-wire-main', negatable: false, help: "Don't auto-insert setupPatcher() into lib/main.dart.")
     ..addFlag('help', abbr: 'h', negatable: false, help: 'Show help.');
 
   final ArgResults args;
@@ -82,19 +83,35 @@ Future<int> _run(List<String> argv) async {
   bootstrap.writeAsStringSync(_bootstrapSource(serverLit, keyLit));
   stdout.writeln('[init] wrote ${bootstrap.path}');
 
-  // 3) Next steps.
+  // 3) Auto-wire setupPatcher() into main() (best-effort; common shapes only).
+  var mainWired = false;
+  final mainFile = File('$dir/lib/main.dart');
+  if (!(args['no-wire-main'] as bool) && mainFile.existsSync()) {
+    final res = _wireMainDart(mainFile.readAsStringSync());
+    if (res.updated != null) {
+      mainFile.writeAsStringSync(res.updated!);
+      mainWired = true;
+      stdout.writeln('[init] ${res.note} (lib/main.dart)');
+    } else {
+      stdout.writeln('[init] ${res.note}');
+    }
+  }
+
+  // 4) Next steps.
+  final step2 = mainWired
+      ? 'main() is wired — run `dart run flutter_patcher:doctor --project .` to verify'
+      : "In your main(), before runApp():\n\n"
+          "       import 'patcher_bootstrap.dart';\n"
+          "       Future<void> main() async {\n"
+          "         WidgetsFlutterBinding.ensureInitialized();\n"
+          "         await setupPatcher();   // checks + stages a patch for the next launch\n"
+          "         runApp(const MyApp());\n"
+          "       }";
   stdout.writeln('''
 
 Next:
   1. flutter pub get
-  2. In your main(), before runApp():
-
-       import 'patcher_bootstrap.dart';
-       Future<void> main() async {
-         WidgetsFlutterBinding.ensureInitialized();
-         await setupPatcher();   // checks + stages a patch for the next launch
-         runApp(const MyApp());
-       }
+  2. $step2
 ${keyLit.startsWith('PASTE') ? '''
   3. On your server run `npm run keygen`, then re-run init with
      --server <url> --public-key <key> (or edit patcher_bootstrap.dart).''' : ''}
@@ -107,6 +124,60 @@ ${keyLit.startsWith('PASTE') ? '''
 Docs: https://github.com/darmawan01/flutter_patcher/tree/main/docs
 ''');
   return 0;
+}
+
+/// Best-effort insertion of `setupPatcher()` into a Flutter `main()`. Handles the
+/// shapes `flutter create` produces (block and arrow `main`); returns
+/// `(updated: null)` with a note when it can't safely edit, so init falls back to
+/// printing the snippet.
+({String? updated, String note}) _wireMainDart(String original) {
+  if (original.contains('setupPatcher(')) {
+    return (updated: null, note: 'main() already calls setupPatcher() — left as-is');
+  }
+  if (!original.contains('runApp(')) {
+    return (updated: null, note: 'no runApp() in lib/main.dart — wire setupPatcher() in manually');
+  }
+  var src = original;
+
+  // Ensure the bootstrap import is present (after the last import, else at top).
+  if (!src.contains('patcher_bootstrap.dart')) {
+    final imports = RegExp(r'^import .*;$', multiLine: true).allMatches(src).toList();
+    const importLine = "import 'patcher_bootstrap.dart';";
+    if (imports.isNotEmpty) {
+      final last = imports.last;
+      src = '${src.substring(0, last.end)}\n$importLine${src.substring(last.end)}';
+    } else {
+      src = '$importLine\n$src';
+    }
+  }
+
+  // Arrow form: `main() => runApp(...);`
+  final arrow = RegExp(
+    r'(?:void|Future<void>)\s+main\s*\(\s*\)\s*(?:async\s*)?=>\s*runApp\((.*?)\);',
+    dotAll: true,
+  );
+  final am = arrow.firstMatch(src);
+  if (am != null) {
+    final replacement = 'Future<void> main() async {\n'
+        '  WidgetsFlutterBinding.ensureInitialized();\n'
+        '  await setupPatcher();\n'
+        '  runApp(${am.group(1)});\n'
+        '}';
+    return (updated: src.replaceRange(am.start, am.end, replacement), note: 'wired main() (arrow form)');
+  }
+
+  // Block form: make async (unless already), inject before the first runApp line.
+  src = src.replaceFirst(RegExp(r'\bvoid\s+main\s*\(\s*\)(?!\s*async)'), 'Future<void> main() async');
+  final runIdx = src.indexOf('runApp(');
+  final lineStart = src.lastIndexOf('\n', runIdx) + 1;
+  final indent = RegExp(r'^[ \t]*').firstMatch(src.substring(lineStart))!.group(0)!;
+  final inject = StringBuffer();
+  if (!src.contains('WidgetsFlutterBinding.ensureInitialized(')) {
+    inject.write('${indent}WidgetsFlutterBinding.ensureInitialized();\n');
+  }
+  inject.write('${indent}await setupPatcher();\n');
+  src = src.replaceRange(lineStart, lineStart, inject.toString());
+  return (updated: src, note: 'wired main() (await setupPatcher())');
 }
 
 String _bootstrapSource(String server, String publicKey) => '''

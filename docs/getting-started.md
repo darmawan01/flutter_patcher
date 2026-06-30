@@ -39,7 +39,8 @@ dart run flutter_patcher:init \
 flutter pub get
 ```
 
-`init` adds the dependency and writes `lib/patcher_bootstrap.dart`. Call it in `main()`:
+`init` adds the dependency, writes `lib/patcher_bootstrap.dart`, **and auto-wires
+`setupPatcher()` into your `main()`** — so it ends up looking like this:
 
 ```dart
 import 'patcher_bootstrap.dart';
@@ -50,6 +51,9 @@ Future<void> main() async {
   runApp(const MyApp());
 }
 ```
+
+(If your `main()` is unusual, init prints the snippet to add instead. Pass
+`--no-wire-main` to skip touching `main.dart`.)
 
 Verify the wiring before you ship — catches the usual mistakes (placeholder key,
 `setupPatcher()` not called, unreachable server):
