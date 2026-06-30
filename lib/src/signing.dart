@@ -77,10 +77,20 @@ class PatchSigning {
   static Uint8List rawPublicKeyFromBase64(String publicKeyBase64) {
     final bytes = base64.decode(publicKeyBase64.trim());
     if (bytes.length == 32) return Uint8List.fromList(bytes);
-    if (bytes.length > 32) {
-      return Uint8List.fromList(bytes.sublist(bytes.length - 32));
+    // X.509 SPKI: the 12-byte Ed25519 prefix + the 32-byte key. Require the exact
+    // length and prefix rather than blindly taking the last 32 bytes of anything.
+    if (bytes.length == 44 && _hasEd25519SpkiPrefix(bytes)) {
+      return Uint8List.fromList(bytes.sublist(12));
     }
-    throw ArgumentError('invalid Ed25519 public key length: ${bytes.length}');
+    throw ArgumentError(
+        'invalid Ed25519 public key: expected 32 raw or 44 SPKI bytes, got ${bytes.length}');
+  }
+
+  static bool _hasEd25519SpkiPrefix(List<int> bytes) {
+    for (var i = 0; i < _ed25519SpkiPrefix.length; i++) {
+      if (bytes[i] != _ed25519SpkiPrefix[i]) return false;
+    }
+    return true;
   }
 
   /// Signs [message] with the seed, returning the base64 Ed25519 signature.

@@ -36,14 +36,16 @@ internal object DeltaPatch {
                 OP_COPY -> {
                     val (baseOff, n1) = readVarint(delta, i); i = n1
                     val (len, n2) = readVarint(delta, i); i = n2
-                    if (baseOff < 0 || len < 0 || baseOff + len > base.size) {
+                    // Subtract instead of `baseOff + len` so a hostile varint can't
+                    // overflow Int and wrap past the bounds check.
+                    if (baseOff < 0 || len < 0 || baseOff > base.size - len) {
                         throw DeltaFormatException("COPY out of range: off=$baseOff len=$len base=${base.size}")
                     }
                     out.write(base, baseOff, len)
                 }
                 OP_INSERT -> {
                     val (len, n1) = readVarint(delta, i); i = n1
-                    if (len < 0 || i + len > delta.size) {
+                    if (len < 0 || len > delta.size - i) {
                         throw DeltaFormatException("INSERT out of range: len=$len")
                     }
                     out.write(delta, i, len)

@@ -126,11 +126,19 @@ class DeltaCodec {
         final res2 = _readVarint(delta, i);
         final len = res2.value;
         i = res2.next;
+        // Overflow-safe bounds: subtract instead of `baseOff + len` so a hostile
+        // varint can't wrap past the array length.
+        if (baseOff < 0 || len < 0 || baseOff > base.length - len) {
+          throw FormatException('COPY out of range: off=$baseOff len=$len base=${base.length}');
+        }
         out.addBytes(Uint8List.sublistView(base, baseOff, baseOff + len));
       } else if (op == _opInsert) {
         final res = _readVarint(delta, i);
         final len = res.value;
         i = res.next;
+        if (len < 0 || len > delta.length - i) {
+          throw FormatException('INSERT out of range: len=$len');
+        }
         out.addBytes(Uint8List.sublistView(delta, i, i + len));
         i += len;
       } else {

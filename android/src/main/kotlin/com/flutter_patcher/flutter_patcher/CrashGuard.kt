@@ -152,11 +152,13 @@ internal class CrashGuard(private val context: Context) {
 
     /** 清零所有熔断状态（配合补丁安装/回滚调用）。 */
     fun reset() {
+        // commit() (synchronous) to match the other circuit-breaker writes — reset()
+        // runs during install/rollback, where a crash right after must not lose it.
         sp.edit()
             .putBoolean(PatcherConfig.KEY_PATCH_LOADING, false)
             .putInt(PatcherConfig.KEY_CRASH_COUNT, 0)
             .remove(PatcherConfig.KEY_LAST_BOOTING_PID)
-            .apply()
+            .commit()
     }
 
     /**

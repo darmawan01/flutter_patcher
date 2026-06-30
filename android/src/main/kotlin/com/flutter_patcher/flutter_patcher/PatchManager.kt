@@ -250,7 +250,8 @@ internal class PatchManager(
         )
         if (verifyResult != SignatureVerifier.VerifyResult.OK) {
             val status = when (verifyResult) {
-                SignatureVerifier.VerifyResult.MD5_MISMATCH ->
+                // Diagnostic string kept as DROPPED_MD5_MISMATCH for telemetry compatibility.
+                SignatureVerifier.VerifyResult.HASH_MISMATCH ->
                     BootDiagnosticStore.DROPPED_MD5_MISMATCH
                 SignatureVerifier.VerifyResult.SIGNATURE_INVALID ->
                     BootDiagnosticStore.DROPPED_SIGNATURE_INVALID

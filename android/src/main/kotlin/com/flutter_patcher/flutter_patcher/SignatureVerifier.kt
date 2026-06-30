@@ -101,7 +101,7 @@ internal object SignatureVerifier {
      * [verify] 的细粒度结果。调用方据此可区分"被丢弃的具体原因"用于诊断上报，
      * 见 [BootDiagnosticStore.DROPPED_MD5_MISMATCH] / [BootDiagnosticStore.DROPPED_SIGNATURE_INVALID]。
      */
-    enum class VerifyResult { OK, MD5_MISMATCH, SIGNATURE_INVALID }
+    enum class VerifyResult { OK, HASH_MISMATCH, SIGNATURE_INVALID }
 
     /**
      * 完整校验（细粒度版本）：SHA-256 完整性 + 可选 Ed25519。返回失败原因分类。
@@ -126,7 +126,7 @@ internal object SignatureVerifier {
         val actualSha256 = sha256(file)
         if (!actualSha256.equals(expectedSha256, ignoreCase = true)) {
             Log.e(TAG, "sha256 mismatch: expected=$expectedSha256, actual=$actualSha256")
-            return VerifyResult.MD5_MISMATCH
+            return VerifyResult.HASH_MISMATCH
         }
         return if (verifySignatureOnly(
                 signedMessage,
