@@ -79,6 +79,25 @@ void main() {
     });
   });
 
+  group('PatchDeviceInfo', () {
+    test('fromNative parses the device map (int fields coerced)', () {
+      final d = PatchDeviceInfo.fromNative({
+        'model': 'Pixel 7',
+        'manufacturer': 'Google',
+        'os': 'Android 14',
+        'sdkInt': 34,
+        'abi': 'arm64-v8a',
+        'versionCode': 12,
+      });
+      expect(d.model, 'Pixel 7');
+      expect(d.manufacturer, 'Google');
+      expect(d.sdkInt, 34);
+      expect(d.abi, 'arm64-v8a');
+      expect(d.versionCode, 12);
+      expect(d.toJson()['os'], 'Android 14');
+    });
+  });
+
   group('PatchApplyResult', () {
     test('success native map yields ok result', () {
       final r = PatchApplyResult.fromNative({'ok': true});

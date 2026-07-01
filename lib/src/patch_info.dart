@@ -36,6 +36,48 @@ class PatchAnnouncement {
   String toString() => 'PatchAnnouncement($severity: $title)';
 }
 
+/// Device metadata for the fleet view / telemetry tagging.
+class PatchDeviceInfo {
+  final String model;
+  final String manufacturer;
+
+  /// Human OS string, e.g. `Android 14`.
+  final String os;
+  final int? sdkInt;
+  final String abi;
+  final int? versionCode;
+
+  const PatchDeviceInfo({
+    this.model = '',
+    this.manufacturer = '',
+    this.os = '',
+    this.sdkInt,
+    this.abi = '',
+    this.versionCode,
+  });
+
+  factory PatchDeviceInfo.fromNative(Map<dynamic, dynamic> raw) => PatchDeviceInfo(
+        model: (raw['model'] ?? '') as String,
+        manufacturer: (raw['manufacturer'] ?? '') as String,
+        os: (raw['os'] ?? '') as String,
+        sdkInt: (raw['sdkInt'] as num?)?.toInt(),
+        abi: (raw['abi'] ?? '') as String,
+        versionCode: (raw['versionCode'] as num?)?.toInt(),
+      );
+
+  Map<String, Object?> toJson() => {
+        'model': model,
+        'manufacturer': manufacturer,
+        'os': os,
+        if (sdkInt != null) 'sdkInt': sdkInt,
+        'abi': abi,
+        if (versionCode != null) 'versionCode': versionCode,
+      };
+
+  @override
+  String toString() => 'PatchDeviceInfo($manufacturer $model, $os, $abi)';
+}
+
 /// Minimum metadata needed to install a patch.
 ///
 /// `PatchInfo` is intentionally backend-agnostic. Your update data can come

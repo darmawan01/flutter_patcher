@@ -484,6 +484,20 @@ class FlutterPatcher {
     }
   }
 
+  /// Device metadata (model / manufacturer / OS / ABI / versionCode) for the
+  /// fleet view. Attach it to your telemetry so a failed apply can be traced to a
+  /// device type. Null on non-Android or on failure.
+  static Future<PatchDeviceInfo?> get deviceInfo async {
+    if (_notAndroidGuard('deviceInfo')) return null;
+    try {
+      final raw = await PatcherChannel.deviceInfo();
+      return raw == null ? null : PatchDeviceInfo.fromNative(raw);
+    } catch (e, s) {
+      _log('deviceInfo failed: $e', s);
+      return null;
+    }
+  }
+
   /// Patch version currently installed on disk.
   ///
   /// A successful `applyPatch` updates this immediately, but the patch is only

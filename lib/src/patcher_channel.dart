@@ -114,6 +114,13 @@ class PatcherChannel {
     return channel.invokeMethod<String>('deviceAbi');
   }
 
+  /// Device metadata for the fleet view: model, manufacturer, os, sdkInt, abi,
+  /// versionCode. Fetched once; attach to telemetry so failures can be traced to
+  /// a device type.
+  static Future<Map<dynamic, dynamic>?> deviceInfo() async {
+    return channel.invokeMethod<Map<dynamic, dynamic>>('deviceInfo');
+  }
+
   /// Stable per-install id (the same one used for staged-rollout bucketing).
   /// Used to stamp telemetry events so the server can count distinct devices.
   static Future<String?> installId() async {

@@ -105,6 +105,16 @@ class FlutterPatcherPlugin :
             "cacheDir" -> result.success(appContext.cacheDir.absolutePath)
             "appVersionCode" -> result.success(PatcherConfig.currentVersionCode(appContext))
             "deviceAbi" -> result.success(Build.SUPPORTED_ABIS.firstOrNull().orEmpty())
+            "deviceInfo" -> result.success(
+                mapOf(
+                    "model" to Build.MODEL,
+                    "manufacturer" to Build.MANUFACTURER,
+                    "os" to "Android ${Build.VERSION.RELEASE}",
+                    "sdkInt" to Build.VERSION.SDK_INT,
+                    "abi" to Build.SUPPORTED_ABIS.firstOrNull().orEmpty(),
+                    "versionCode" to PatcherConfig.currentVersionCode(appContext),
+                )
+            )
             "installId" -> result.success(PatcherConfig.installId(appContext))
             "blacklist" -> result.success(BlacklistStore.entries(appContext))
             "clearBlacklist" -> {
