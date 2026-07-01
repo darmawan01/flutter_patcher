@@ -12,6 +12,15 @@ Future<Map<String, dynamic>> getJson(
   throw UnsupportedError('flutter_patcher only supports Android');
 }
 
+Future<int> postJson(
+  String url,
+  Map<String, dynamic> body, {
+  Map<String, String>? headers,
+  Duration timeout = const Duration(seconds: 10),
+}) {
+  throw UnsupportedError('flutter_patcher only supports Android');
+}
+
 Future<String> stagePatchBytes(String dir, Uint8List bytes) {
   throw UnsupportedError('flutter_patcher only supports Android');
 }

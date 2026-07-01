@@ -7,6 +7,7 @@ import 'package:flutter/widgets.dart';
 
 import 'src/blacklist.dart';
 import 'src/boot_diagnostic.dart';
+import 'src/feedback.dart';
 import 'src/io_stub.dart' if (dart.library.io) 'src/io.dart' as platform_io;
 import 'src/patch_event.dart';
 import 'src/patch_info.dart';
@@ -14,7 +15,9 @@ import 'src/patcher_channel.dart';
 
 export 'src/blacklist.dart';
 export 'src/boot_diagnostic.dart';
+export 'src/feedback.dart';
 export 'src/patch_event.dart';
+export 'src/patch_feedback.dart';
 export 'src/patch_info.dart';
 
 /// Android-only Flutter hot-update entrypoint.
@@ -46,6 +49,7 @@ class FlutterPatcher {
   static bool _bootReported = false;
   static void Function(PatchEvent)? _onEvent;
   static String? _installId; // stable per-install id, stamped onto events
+  static String? _feedbackUrl; // default endpoint for reportFeedback
 
   static void _emit(PatchEvent event) {
     final sink = _onEvent;
@@ -153,8 +157,10 @@ class FlutterPatcher {
     bool loaderFallbackHeuristic = false,
     Duration verifyAfter = const Duration(seconds: 5),
     void Function(PatchEvent)? onEvent,
+    String? feedbackUrl,
   }) async {
     _onEvent = onEvent;
+    _feedbackUrl = feedbackUrl;
     if (_notAndroidGuard('init')) return;
     if (_inited) return;
     _inited = true;
@@ -240,6 +246,41 @@ class FlutterPatcher {
       await PatcherChannel.reportBootSuccess();
     } catch (e, s) {
       _log('reportBootSuccess failed: $e', s);
+    }
+  }
+
+  /// Reports user sentiment on the currently-running patch to the console's
+  /// `/api/feedback` endpoint. [installId] and [version] are filled from what the
+  /// SDK already knows, so callers usually pass only [rating] (+ optional
+  /// [comment]). Configure the endpoint once via [init]'s `feedbackUrl`, or pass
+  /// [url] per call. Never throws; returns `true` on a 2xx response.
+  static Future<bool> reportFeedback({
+    required PatchRating rating,
+    String? comment,
+    String? version,
+    String? url,
+    Duration timeout = const Duration(seconds: 10),
+  }) async {
+    if (_notAndroidGuard('reportFeedback')) return false;
+    final endpoint = url ?? _feedbackUrl;
+    if (endpoint == null || endpoint.isEmpty) {
+      _log('reportFeedback: no feedbackUrl configured (pass url: or set feedbackUrl in init)');
+      return false;
+    }
+    try {
+      final installId = _installId ?? await PatcherChannel.installId();
+      final v = version ?? await currentVersion;
+      final payload = buildFeedbackPayload(
+        rating: rating,
+        installId: installId,
+        version: v,
+        comment: comment,
+      );
+      final status = await platform_io.postJson(endpoint, payload, timeout: timeout);
+      return status >= 200 && status < 300;
+    } catch (e, s) {
+      _log('reportFeedback failed: $e', s);
+      return false;
     }
   }
 

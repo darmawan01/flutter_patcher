@@ -32,6 +32,28 @@ Future<Map<String, dynamic>> getJson(
   }
 }
 
+/// POST a JSON body and return the HTTP status code. Used by reportFeedback.
+Future<int> postJson(
+  String url,
+  Map<String, dynamic> body, {
+  Map<String, String>? headers,
+  Duration timeout = const Duration(seconds: 10),
+}) async {
+  final uri = Uri.parse(url);
+  final client = HttpClient()..connectionTimeout = timeout;
+  try {
+    final req = await client.postUrl(uri).timeout(timeout);
+    headers?.forEach(req.headers.set);
+    req.headers.set(HttpHeaders.contentTypeHeader, 'application/json');
+    req.add(utf8.encode(jsonEncode(body)));
+    final resp = await req.close().timeout(timeout);
+    await resp.drain<void>();
+    return resp.statusCode;
+  } finally {
+    client.close(force: true);
+  }
+}
+
 Future<String> stagePatchBytes(String dir, Uint8List bytes) async {
   final staged = File(
     '$dir/flutter_patcher_staged_${DateTime.now().microsecondsSinceEpoch}.so',
