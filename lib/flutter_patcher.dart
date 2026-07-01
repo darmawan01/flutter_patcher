@@ -19,6 +19,7 @@ export 'src/feedback.dart';
 export 'src/patch_event.dart';
 export 'src/patch_feedback.dart';
 export 'src/patch_info.dart';
+export 'src/patch_update_prompt.dart';
 
 /// Android-only Flutter hot-update entrypoint.
 ///
