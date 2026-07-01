@@ -37,6 +37,8 @@ If this project helps your Flutter release workflow, please star it.
 - HTTPS-required downloads with optional cert pinning; multi-key rotation
 - Crash-loop circuit breaker, base-binary drift guard, multi-ABI packaging
 - Staged percentage rollouts + channels; `checkAndStage` safe-default flow
+- Signed announcements + delivery modes (`silent` / `notify` / `custom`) via manifest v3
+- Drop-in, fully customizable in-app widgets: `PatchUpdatePrompt` (notify) + `PatchFeedback` (👍/👎), plus `reportFeedback()`
 - Signing CLI (`keygen` / `pack --key` / `doctor`), diagnostics, mock server, sample app
 - Self-hosted reference server + control-room dashboard (rollout %, channels, kill switch, telemetry)
 
@@ -73,6 +75,60 @@ dart run flutter_patcher:status --server <url>
 ```
 
 Full walkthrough: **[docs/getting-started.md](docs/getting-started.md)**.
+
+---
+
+## In-app prompts (notify + feedback)
+
+Optional, dependency-free widgets so you don't hand-roll UI. All three are
+customizable at three levels: use the defaults, tweak the props, or pass a
+`builder:` that renders your own UI while reusing the plumbing.
+
+**Announce a patch (the `notify` delivery mode).** When `checkAndStage` stages a
+patch whose `deliveryMode` is `notify`, its signed `announcement` is on
+`check.patch`. Surface it as a banner or a dialog:
+
+```dart
+final check = await FlutterPatcher.checkUpdate(kCheckUrl);
+final a = check.patch?.announcement;
+if (a != null && check.patch?.deliveryMode == 'notify') {
+  await PatchUpdatePrompt.showAsDialog(context, announcement: a);
+  // …or drop the PatchUpdatePrompt(announcement: a, onUpdate: promptRestart) banner in your tree.
+}
+```
+
+**Collect feedback on the running patch.** Point the SDK at your feedback
+endpoint once, then drop in the widget (or call the API from your own UI):
+
+```dart
+await FlutterPatcher.init(
+  publicKeyBase64: kPublicKey,
+  feedbackUrl: '$kServer/api/feedback?app=$kAppId',
+);
+
+// drop-in 👍/👎 (installId + current patch version are filled in for you)
+PatchFeedback(prompt: 'How's the new version?', showComment: true)
+
+// or your own UI:
+await FlutterPatcher.reportFeedback(rating: PatchRating.up, comment: 'snappy');
+```
+
+Full control via the builder escape hatch (e.g. a 5-star rating):
+
+```dart
+PatchFeedback(
+  builder: (context, s) => s.done
+      ? const Text('🙏')
+      : Row(children: [
+          for (final n in [1, 2, 3, 4, 5])
+            IconButton(
+              icon: const Icon(Icons.star),
+              onPressed: s.submitting ? null : () => s.submit(
+                n >= 4 ? PatchRating.up : PatchRating.down, comment: '$n stars'),
+            ),
+        ]),
+)
+```
 
 ---
 
