@@ -1,4 +1,5 @@
 import {
+  createHash,
   createPrivateKey,
   createPublicKey,
   generateKeyPairSync,
@@ -70,6 +71,38 @@ export class Signer {
         `sha256=${p.sha256.toLowerCase()}\n` +
         `rolloutPercent=${p.rolloutPercent}\n` +
         `channel=${p.channel}`,
+    );
+  }
+
+  /** v3 manifest — adds delivery mode + optional announcement (body bound by hash). */
+  signManifestV3(p: {
+    version: string;
+    patchNumber: number;
+    targetVersionCode: number;
+    sha256: string;
+    rolloutPercent: number;
+    channel: string;
+    delivery: 'silent' | 'notify' | 'custom';
+    annTitle?: string | null;
+    annBody?: string | null;
+    annSeverity?: string | null;
+    annUrl?: string | null;
+  }): string {
+    const oneLine = (s: string | null | undefined) => (s ?? '').replace(/[\r\n]+/g, ' ');
+    const bodySha = p.annBody ? createHash('sha256').update(p.annBody, 'utf8').digest('hex') : '';
+    return this.sign(
+      'flutter_patcher.manifest.v3\n' +
+        `version=${p.version}\n` +
+        `patchNumber=${p.patchNumber}\n` +
+        `targetVersionCode=${p.targetVersionCode}\n` +
+        `sha256=${p.sha256.toLowerCase()}\n` +
+        `rolloutPercent=${p.rolloutPercent}\n` +
+        `channel=${p.channel}\n` +
+        `delivery=${p.delivery}\n` +
+        `annTitle=${oneLine(p.annTitle)}\n` +
+        `annSeverity=${oneLine(p.annSeverity)}\n` +
+        `annUrl=${oneLine(p.annUrl)}\n` +
+        `annBodySha256=${bodySha}`,
     );
   }
 

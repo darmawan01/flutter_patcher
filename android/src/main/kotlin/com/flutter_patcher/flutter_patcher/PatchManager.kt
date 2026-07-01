@@ -413,12 +413,29 @@ internal class PatchManager(
                     "patchNumber=$patchNumber not greater than last applied=$last"
                 )
             }
-            signedManifest = if (rolloutPresent) {
-                SignatureVerifier.canonicalManifestV2(
+            // v3 (delivery + announcement) → v2 (rollout) → v1. v3 binds the delivery
+            // mode and, if present, the announcement (body by its SHA-256, recomputed
+            // here from the delivered body so a tampered note fails verification).
+            val isV3 = (info["manifestVersion"] as? Number)?.toInt() == 3 ||
+                info.containsKey("delivery")
+            signedManifest = when {
+                isV3 -> {
+                    val delivery = (info["delivery"] as? String) ?: "silent"
+                    val annTitle = (info["annTitle"] as? String) ?: ""
+                    val annBody = (info["annBody"] as? String) ?: ""
+                    val annSeverity = (info["annSeverity"] as? String) ?: ""
+                    val annUrl = (info["annUrl"] as? String) ?: ""
+                    val annBodySha =
+                        if (annBody.isNotEmpty()) SignatureVerifier.sha256Hex(annBody) else ""
+                    SignatureVerifier.canonicalManifestV3(
+                        version, patchNumber, serverTargetVc, sha256, rolloutPercent, channel,
+                        delivery, annTitle, annSeverity, annUrl, annBodySha
+                    )
+                }
+                rolloutPresent -> SignatureVerifier.canonicalManifestV2(
                     version, patchNumber, serverTargetVc, sha256, rolloutPercent, channel
                 )
-            } else {
-                SignatureVerifier.canonicalManifest(
+                else -> SignatureVerifier.canonicalManifest(
                     version, patchNumber, serverTargetVc, sha256
                 )
             }

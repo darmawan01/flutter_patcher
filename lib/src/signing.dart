@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart' as crypto;
 import 'package:ed25519_edwards/ed25519_edwards.dart' as ed;
 
 /// Ed25519 signing helpers for the pack/keygen/doctor CLIs.
@@ -47,6 +48,44 @@ class PatchSigning {
       'sha256=${sha256.toLowerCase()}\n'
       'rolloutPercent=$rolloutPercent\n'
       'channel=$channel';
+
+  /// The canonical v3 signed manifest — identical to the device builder. Adds a
+  /// delivery mode and an optional announcement on top of v2. The body may be
+  /// multi-line, so it is bound by its SHA-256 (the device recomputes it over the
+  /// delivered body); title/severity/url are single-line (newlines collapsed to a
+  /// space). Empty announcement fields sign as `""`. Used only when the response
+  /// carries an announcement or a non-silent delivery; otherwise v2 is used, so
+  /// existing signed patches keep verifying unchanged.
+  static String canonicalManifestV3({
+    required String version,
+    required int patchNumber,
+    required int targetVersionCode,
+    required String sha256,
+    required int rolloutPercent,
+    required String channel,
+    required String delivery,
+    String? annTitle,
+    String? annBody,
+    String? annSeverity,
+    String? annUrl,
+  }) {
+    String oneLine(String? s) => (s ?? '').replaceAll(RegExp(r'[\r\n]+'), ' ');
+    final bodySha = (annBody != null && annBody.isNotEmpty)
+        ? crypto.sha256.convert(utf8.encode(annBody)).toString()
+        : '';
+    return 'flutter_patcher.manifest.v3\n'
+        'version=$version\n'
+        'patchNumber=$patchNumber\n'
+        'targetVersionCode=$targetVersionCode\n'
+        'sha256=${sha256.toLowerCase()}\n'
+        'rolloutPercent=$rolloutPercent\n'
+        'channel=$channel\n'
+        'delivery=$delivery\n'
+        'annTitle=${oneLine(annTitle)}\n'
+        'annSeverity=${oneLine(annSeverity)}\n'
+        'annUrl=${oneLine(annUrl)}\n'
+        'annBodySha256=$bodySha';
+  }
 
   /// The canonical rollback (kill-switch) list — identical to the device builder.
   static String canonicalRollback(List<int> patchNumbers) {

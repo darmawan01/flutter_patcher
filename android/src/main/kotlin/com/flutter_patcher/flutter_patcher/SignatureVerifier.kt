@@ -205,6 +205,49 @@ internal object SignatureVerifier {
     }
 
     /**
+     * v3 规范化 manifest：在 v2 基础上再绑定 delivery mode 与可选公告（announcement）。
+     * body 可能多行，改为绑定其 SHA-256（设备用收到的 body 重新计算，防篡改）；
+     * title/severity/url 单行（换行折叠为空格）。仅当下发响应带 announcement 或
+     * delivery≠silent 时使用；否则仍用 v2，保持对存量已签补丁的兼容。签名方与设备端
+     * 构造必须逐字节一致。
+     */
+    fun canonicalManifestV3(
+        version: String,
+        patchNumber: Long,
+        targetVersionCode: Long,
+        sha256: String,
+        rolloutPercent: Int,
+        channel: String,
+        delivery: String,
+        annTitle: String,
+        annSeverity: String,
+        annUrl: String,
+        annBodySha256: String
+    ): String = buildString {
+        append("flutter_patcher.manifest.v3\n")
+        append("version=").append(version).append('\n')
+        append("patchNumber=").append(patchNumber).append('\n')
+        append("targetVersionCode=").append(targetVersionCode).append('\n')
+        append("sha256=").append(sha256.lowercase()).append('\n')
+        append("rolloutPercent=").append(rolloutPercent).append('\n')
+        append("channel=").append(channel).append('\n')
+        append("delivery=").append(delivery).append('\n')
+        append("annTitle=").append(oneLine(annTitle)).append('\n')
+        append("annSeverity=").append(oneLine(annSeverity)).append('\n')
+        append("annUrl=").append(oneLine(annUrl)).append('\n')
+        append("annBodySha256=").append(annBodySha256)
+    }
+
+    private fun oneLine(s: String): String = s.replace(Regex("[\\r\\n]+"), " ")
+
+    /** Lower-case hex SHA-256 of a UTF-8 string. Used to bind an announcement body. */
+    fun sha256Hex(s: String): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(s.toByteArray(Charsets.UTF_8))
+        return digest.joinToString("") { "%02x".format(it) }
+    }
+
+    /**
      * 规范化"已下架补丁"列表字符串（kill switch）。签名覆盖它，设备据此把已安装但被
      * 服务端下架的补丁删除回内置版本。patchNumbers 必须**升序去重**，逗号连接，无尾换行：
      *

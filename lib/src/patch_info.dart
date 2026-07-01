@@ -1,3 +1,41 @@
+/// A user-facing release note attached to a patch (manifest v3).
+///
+/// Delivered in the signed `/check` response so it can't be tampered: the
+/// signature binds [title]/[severity]/[url] and the SHA-256 of [body]. Show it to
+/// the user when the patch's [PatchInfo.deliveryMode] is `notify` or `custom`.
+class PatchAnnouncement {
+  final String title;
+  final String body;
+
+  /// `info` | `important` | `critical`.
+  final String severity;
+
+  /// Optional "learn more" link.
+  final String? url;
+
+  const PatchAnnouncement({
+    required this.title,
+    this.body = '',
+    this.severity = 'info',
+    this.url,
+  });
+
+  static PatchAnnouncement? fromJson(dynamic raw) {
+    if (raw is! Map) return null;
+    final title = (raw['title'] ?? '') as String? ?? '';
+    if (title.isEmpty) return null;
+    return PatchAnnouncement(
+      title: title,
+      body: (raw['body'] ?? '') as String? ?? '',
+      severity: (raw['severity'] ?? 'info') as String? ?? 'info',
+      url: raw['url'] as String?,
+    );
+  }
+
+  @override
+  String toString() => 'PatchAnnouncement($severity: $title)';
+}
+
 /// Minimum metadata needed to install a patch.
 ///
 /// `PatchInfo` is intentionally backend-agnostic. Your update data can come
@@ -56,6 +94,19 @@ class PatchInfo {
   /// Optional release channel label (e.g. `beta`). Bound into the v2 manifest.
   final String? channel;
 
+  /// Manifest signing version: `1`, `2`, or `3`. Selects the canonical string the
+  /// device rebuilds to verify [signature]. Defaults to 2.
+  final int manifestVersion;
+
+  /// How this patch should reach the user (manifest v3): `silent` (apply on next
+  /// launch, no UI — the default), `notify` (surface [announcement] and let the
+  /// user choose), or `custom` (the app fully owns the UX). Null on v1/v2.
+  final String? deliveryMode;
+
+  /// Optional signed release note (manifest v3). Present only when the server
+  /// attached one. Bound into the signature.
+  final PatchAnnouncement? announcement;
+
   /// Original JSON fields preserved by [PatchInfo.fromJson].
   ///
   /// Direct construction does not use this field.
@@ -70,6 +121,9 @@ class PatchInfo {
     this.patchNumber,
     this.rolloutPercent,
     this.channel,
+    this.manifestVersion = 2,
+    this.deliveryMode,
+    this.announcement,
     this.raw = const {},
   });
 
@@ -95,6 +149,10 @@ class PatchInfo {
         : (rawRollout is String && rawRollout.isNotEmpty
             ? int.tryParse(rawRollout)
             : null);
+    final rawMv = json['manifestVersion'] ?? json['manifest_version'];
+    final int parsedMv = rawMv is num
+        ? rawMv.toInt()
+        : (rawMv is String ? int.tryParse(rawMv) ?? 2 : 2);
     return PatchInfo(
       version: (json['version'] ?? '') as String,
       patchUrl: (json['patchUrl'] ?? json['patch_url'] ?? '') as String,
@@ -104,11 +162,16 @@ class PatchInfo {
       patchNumber: parsedPn,
       rolloutPercent: parsedRollout,
       channel: json['channel'] as String?,
+      manifestVersion: parsedMv,
+      deliveryMode: json['delivery'] as String?,
+      announcement: PatchAnnouncement.fromJson(json['announcement']),
       raw: Map<String, dynamic>.from(json),
     );
   }
 
-  /// Serializes this patch for the native MethodChannel call.
+  /// Serializes this patch for the native MethodChannel call. For a v3 manifest
+  /// the delivery mode and announcement fields are included so native can rebuild
+  /// the exact signed string (it recomputes the body hash itself).
   Map<String, dynamic> toJson() => {
         'version': version,
         'patchUrl': patchUrl,
@@ -118,6 +181,14 @@ class PatchInfo {
         if (patchNumber != null) 'patchNumber': patchNumber,
         if (rolloutPercent != null) 'rolloutPercent': rolloutPercent,
         if (channel != null) 'channel': channel,
+        if (manifestVersion == 3) 'manifestVersion': 3,
+        if (deliveryMode != null) 'delivery': deliveryMode,
+        if (announcement != null) ...{
+          'annTitle': announcement!.title,
+          'annBody': announcement!.body,
+          'annSeverity': announcement!.severity,
+          if (announcement!.url != null) 'annUrl': announcement!.url,
+        },
       };
 
   @override

@@ -107,8 +107,39 @@ rolloutPercent=<0..100>
 channel=<channel string, may be empty>
 ```
 
+**v3** — adds a **delivery mode** and an optional **announcement** (release note).
+Used when the response carries an announcement or a non-`silent` delivery;
+otherwise v2 is used, so existing signed patches keep verifying unchanged. The
+announcement `body` may be multi-line, so it is bound by its **SHA-256** (the
+device recomputes it over the delivered body — a tampered note fails verification);
+`annTitle` / `annSeverity` / `annUrl` are single-line (any `\r`/`\n` collapse to a
+single space). Absent announcement fields are the empty string, and
+`annBodySha256` is empty when there is no body:
+
+```
+flutter_patcher.manifest.v3
+version=<version>
+patchNumber=<patchNumber>
+targetVersionCode=<targetVersionCode>
+sha256=<lowercase hex>
+rolloutPercent=<0..100>
+channel=<channel string, may be empty>
+delivery=<silent|notify|custom>
+annTitle=<single line, may be empty>
+annSeverity=<info|important|critical, may be empty>
+annUrl=<single line, may be empty>
+annBodySha256=<lowercase hex of the body, or empty>
+```
+
+On a v3 response, `/check.patch` also carries `manifestVersion: 3`, `delivery`, and
+(when present) an `announcement` object `{ title, body, severity, url }`. The
+device shows the announcement when `delivery` is `notify` or `custom`; `silent`
+applies on the next cold start with no UI (the default, unchanged from v1/v2).
+
 These strings are byte-identical across the Kotlin verifier, the Dart CLI, and the
-Node server — a new server/SDK MUST reproduce them exactly.
+Node server — a new server/SDK MUST reproduce them exactly. A shared conformance
+vector (fixed seed → fixed signature) lives in `test/signing_v3_test.dart` and
+`server/test/signing.test.ts`.
 
 ### Kill switch
 
@@ -136,10 +167,13 @@ On `checkAndStage(url)` (or your own check):
    stable random per-install id (also used to tag telemetry). The bucket is patch-
    stable, so widening 10%→50% is a superset (no churn).
 4. **Downgrade protection:** reject `patchNumber <=` the last applied number.
-5. Verify the **signature** over the canonical manifest (v2 if `rolloutPercent`
-   present, else v1) against the trusted key(s).
+5. Verify the **signature** over the canonical manifest against the trusted key(s):
+   v3 if `manifestVersion:3` / `delivery` present, else v2 if `rolloutPercent`
+   present, else v1. For v3, recompute `annBodySha256` from the delivered body.
 6. Download `patchUrl`; verify its **sha256** equals the manifest `sha256`.
 7. Stage it. It takes effect on the **next cold start** (never hot-swapped mid-run).
+   For a v3 `notify`/`custom` delivery, surface the `announcement` to the app so it
+   can prompt the user; `silent` stages with no UI.
 
 A crash-loop circuit breaker (boot token + watchdog) auto-rolls-back a patch that
 crashes on boot, independent of the server.
