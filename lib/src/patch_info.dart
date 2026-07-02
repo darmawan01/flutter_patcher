@@ -47,6 +47,9 @@ class PatchDeviceInfo {
   final String abi;
   final int? versionCode;
 
+  /// The app's real `applicationId` (package name), e.g. `com.acme.app`.
+  final String applicationId;
+
   const PatchDeviceInfo({
     this.model = '',
     this.manufacturer = '',
@@ -54,6 +57,7 @@ class PatchDeviceInfo {
     this.sdkInt,
     this.abi = '',
     this.versionCode,
+    this.applicationId = '',
   });
 
   factory PatchDeviceInfo.fromNative(Map<dynamic, dynamic> raw) => PatchDeviceInfo(
@@ -63,6 +67,7 @@ class PatchDeviceInfo {
         sdkInt: (raw['sdkInt'] as num?)?.toInt(),
         abi: (raw['abi'] ?? '') as String,
         versionCode: (raw['versionCode'] as num?)?.toInt(),
+        applicationId: (raw['applicationId'] ?? '') as String,
       );
 
   Map<String, Object?> toJson() => {
@@ -72,6 +77,7 @@ class PatchDeviceInfo {
         if (sdkInt != null) 'sdkInt': sdkInt,
         'abi': abi,
         if (versionCode != null) 'versionCode': versionCode,
+        if (applicationId.isNotEmpty) 'applicationId': applicationId,
       };
 
   @override

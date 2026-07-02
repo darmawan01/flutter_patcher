@@ -113,6 +113,7 @@ class FlutterPatcherPlugin :
                     "sdkInt" to Build.VERSION.SDK_INT,
                     "abi" to Build.SUPPORTED_ABIS.firstOrNull().orEmpty(),
                     "versionCode" to PatcherConfig.currentVersionCode(appContext),
+                    "applicationId" to appContext.packageName,
                 )
             )
             "installId" -> result.success(PatcherConfig.installId(appContext))

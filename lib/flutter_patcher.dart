@@ -12,6 +12,7 @@ import 'src/io_stub.dart' if (dart.library.io) 'src/io.dart' as platform_io;
 import 'src/patch_event.dart';
 import 'src/patch_info.dart';
 import 'src/patcher_channel.dart';
+import 'src/push.dart';
 
 export 'src/blacklist.dart';
 export 'src/boot_diagnostic.dart';
@@ -20,6 +21,7 @@ export 'src/patch_event.dart';
 export 'src/patch_feedback.dart';
 export 'src/patch_info.dart';
 export 'src/patch_update_prompt.dart';
+export 'src/push.dart';
 
 /// Android-only Flutter hot-update entrypoint.
 ///
@@ -51,6 +53,9 @@ class FlutterPatcher {
   static void Function(PatchEvent)? _onEvent;
   static String? _installId; // stable per-install id, stamped onto events
   static String? _feedbackUrl; // default endpoint for reportFeedback
+  static String? _pushTokenUrl; // default endpoint for registerPushToken
+  static bool _sendAppIdentifier = false; // append pkg/iid to /check when enabled
+  static String? _applicationId; // cached real applicationId for /check + push
 
   static void _emit(PatchEvent event) {
     final sink = _onEvent;
@@ -159,9 +164,13 @@ class FlutterPatcher {
     Duration verifyAfter = const Duration(seconds: 5),
     void Function(PatchEvent)? onEvent,
     String? feedbackUrl,
+    String? pushTokenUrl,
+    bool sendAppIdentifier = false,
   }) async {
     _onEvent = onEvent;
     _feedbackUrl = feedbackUrl;
+    _pushTokenUrl = pushTokenUrl;
+    _sendAppIdentifier = sendAppIdentifier;
     if (_notAndroidGuard('init')) return;
     if (_inited) return;
     _inited = true;
@@ -286,6 +295,55 @@ class FlutterPatcher {
     }
   }
 
+  /// Registers this device's push token with the console so it can receive
+  /// proactive patch announcements. The app owns its FCM/APNs setup and passes
+  /// the [token] here; the SDK adds `installId` and POSTs to the configured
+  /// endpoint (set `pushTokenUrl` in [init], or pass [url]). Never throws;
+  /// returns `true` on a 2xx response.
+  static Future<bool> registerPushToken({
+    required String token,
+    String platform = 'android',
+    String? url,
+    Duration timeout = const Duration(seconds: 10),
+  }) async {
+    if (_notAndroidGuard('registerPushToken')) return false;
+    final endpoint = url ?? _pushTokenUrl;
+    if (endpoint == null || endpoint.isEmpty || token.isEmpty) {
+      _log('registerPushToken: no pushTokenUrl configured or empty token');
+      return false;
+    }
+    try {
+      final installId = _installId ?? await PatcherChannel.installId().timeout(timeout);
+      if (installId == null || installId.isEmpty) {
+        _log('registerPushToken: no installId available');
+        return false;
+      }
+      final status = await platform_io.postJson(
+        endpoint,
+        buildPushTokenPayload(installId: installId, token: token, platform: platform),
+        timeout: timeout,
+      );
+      return status >= 200 && status < 300;
+    } catch (e, s) {
+      _log('registerPushToken failed: $e', s);
+      return false;
+    }
+  }
+
+  /// Best-effort append of `iid`/`pkg` to a check URL when `sendAppIdentifier`
+  /// is on. Enable only when your `appId` *is* your `applicationId`, or the
+  /// server's identifier check will (correctly) refuse the mismatch.
+  static Future<String> _augmentCheck(String url, Duration timeout) async {
+    if (!_sendAppIdentifier) return url;
+    try {
+      final iid = _installId ?? await PatcherChannel.installId().timeout(timeout);
+      _applicationId ??= (await deviceInfo)?.applicationId;
+      return augmentCheckUrl(url, installId: iid, applicationId: _applicationId);
+    } catch (_) {
+      return url; // never let identifier bookkeeping break a check
+    }
+  }
+
   /// Optional HTTP update checker for the built-in minimal JSON protocol.
   ///
   /// Production apps can skip this method, parse their own update response, and
@@ -303,8 +361,9 @@ class FlutterPatcher {
     }
 
     try {
+      final resolvedUrl = await _augmentCheck(url, timeout);
       final decoded = await platform_io.getJson(
-        url,
+        resolvedUrl,
         headers: headers,
         timeout: timeout,
       );
