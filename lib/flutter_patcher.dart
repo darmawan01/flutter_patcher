@@ -269,8 +269,9 @@ class FlutterPatcher {
       return false;
     }
     try {
-      final installId = _installId ?? await PatcherChannel.installId();
-      final v = version ?? await currentVersion;
+      // Bound the native lookups too, so a hung platform channel still honors [timeout].
+      final installId = _installId ?? await PatcherChannel.installId().timeout(timeout);
+      final v = version ?? await currentVersion.timeout(timeout);
       final payload = buildFeedbackPayload(
         rating: rating,
         installId: installId,
